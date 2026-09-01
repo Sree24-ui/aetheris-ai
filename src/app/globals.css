@@ -90,6 +90,20 @@ body {
   overflow-x: hidden;
 }
 
+/* Immediate tactile feedback on every clickable control — without this,
+   hover-only styling makes clicks feel like they didn't register until
+   whatever the click triggered (often a slow network request) finishes. */
+button:not(:disabled),
+a[href],
+[role="button"] {
+  transition: transform 0.1s ease, opacity 0.1s ease;
+}
+button:not(:disabled):active,
+a[href]:active,
+[role="button"]:active {
+  transform: scale(0.97);
+}
+
 /* Ambient background */
 .void-bg {
   background: radial-gradient(circle at 15% 20%, rgba(160, 120, 255, 0.06), transparent 30%),

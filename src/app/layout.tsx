@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Montserrat } from "next/font/google";
 import "./globals.css";
 import "katex/dist/katex.min.css";
+import AuthProvider from "@/components/AuthProvider";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -32,7 +33,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           rel="stylesheet"
         />
       </head>
-      <body className="min-h-full flex flex-col void-bg">{children}</body>
+      <body className="min-h-full flex flex-col void-bg">
+        <AuthProvider>{children}</AuthProvider>
+      </body>
     </html>
   );
 }

@@ -2,63 +2,43 @@
 
 import type { LearnerMemory, LearnerHistoryEntry, LearningPath } from "./types";
 
-const KEY = "ai-teacher-memory-v1";
-
 const EMPTY: LearnerMemory = {
   history: [],
   weakConcepts: [],
   strongConcepts: [],
 };
 
-export function loadMemory(): LearnerMemory {
-  if (typeof window === "undefined") return EMPTY;
+// Learner history now lives in the database, scoped to the signed-in user
+// (see src/lib/serverMemory.ts and src/app/api/history/*) instead of
+// browser localStorage — so it follows the account across devices and two
+// different accounts in the same browser no longer share history.
+
+export async function loadMemory(): Promise<LearnerMemory> {
   try {
-    const raw = window.localStorage.getItem(KEY);
-    if (!raw) return EMPTY;
-    return JSON.parse(raw) as LearnerMemory;
+    const res = await fetch("/api/history");
+    if (!res.ok) return EMPTY;
+    return (await res.json()) as LearnerMemory;
   } catch {
     return EMPTY;
   }
 }
 
-export function saveMemory(memory: LearnerMemory) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(KEY, JSON.stringify(memory));
-}
-
-export function addHistoryEntry(entry: LearnerHistoryEntry) {
-  const mem = loadMemory();
-  mem.history = [entry, ...mem.history].slice(0, 50);
-  const weak = new Set(mem.weakConcepts);
-  const strong = new Set(mem.strongConcepts);
-  entry.weakAreas.forEach((w) => {
-    weak.add(w);
-    strong.delete(w);
+export async function addHistoryEntry(entry: LearnerHistoryEntry): Promise<void> {
+  await fetch("/api/history", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(entry),
   });
-  entry.strongAreas.forEach((s) => {
-    strong.add(s);
-    weak.delete(s);
+}
+
+export async function setCurrentPath(path: LearningPath, stepIndex = 0): Promise<void> {
+  await fetch("/api/history/path", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, stepIndex }),
   });
-  mem.weakConcepts = Array.from(weak);
-  mem.strongConcepts = Array.from(strong);
-  saveMemory(mem);
 }
 
-export function setCurrentPath(path: LearningPath, stepIndex = 0) {
-  const mem = loadMemory();
-  mem.currentPath = path;
-  mem.currentStepIndex = stepIndex;
-  saveMemory(mem);
-}
-
-export function advancePath() {
-  const mem = loadMemory();
-  if (mem.currentPath && mem.currentStepIndex !== undefined) {
-    mem.currentStepIndex = Math.min(mem.currentStepIndex + 1, mem.currentPath.steps.length);
-    saveMemory(mem);
-  }
-}
-
-export function clearMemory() {
-  saveMemory(EMPTY);
+export async function advancePath(): Promise<void> {
+  await fetch("/api/history/path/advance", { method: "POST" });
 }
