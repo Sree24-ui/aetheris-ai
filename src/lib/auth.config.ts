@@ -14,11 +14,20 @@ export const authConfig: NextAuthConfig = {
     Google({
       clientId: process.env.GOOGLE_CLIENT_ID,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      // Without this, Google silently reuses whichever Google account is
+      // already active in the browser and skips the account chooser, so
+      // signing in again can re-authenticate as the same account even when
+      // the user intends to switch — surfacing as "history never changes."
+      authorization: { params: { prompt: "select_account" } },
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger, session }) {
       if (user) token.id = user.id;
+      // Lets the client push a fresh name into the JWT after a profile edit
+      // (see ProfileDashboard's `update({ name })` call) without requiring
+      // a full re-login.
+      if (trigger === "update" && session?.name) token.name = session.name;
       return token;
     },
     async session({ session, token }) {
