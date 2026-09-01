@@ -1,69 +1,247 @@
-import Image from "next/image";
+"use client";
+
+import { useState } from "react";
+import type {
+  LearnerProfile,
+  LessonPlan,
+  QuizQuestion,
+  LearningReport,
+  LearningPath,
+  DocumentSummary,
+  TranscriptMessage,
+} from "@/lib/types";
+import AppShell from "@/components/AppShell";
+import HomeDashboard from "@/components/HomeDashboard";
+import ConfigForm from "@/components/ConfigForm";
+import TeachingSession from "@/components/TeachingSession";
+import QuizPanel from "@/components/QuizPanel";
+import ReportPanel from "@/components/ReportPanel";
+import LearningPathPanel from "@/components/LearningPathPanel";
+import LearnerDashboard from "@/components/LearnerDashboard";
+import { addHistoryEntry, setCurrentPath, advancePath, loadMemory } from "@/lib/memory";
+
+type Stage = "home" | "config" | "planning" | "teaching" | "quiz" | "report" | "path" | "dashboard";
 
 export default function Home() {
+  const [stage, setStage] = useState<Stage>("home");
+  const [profile, setProfile] = useState<LearnerProfile | null>(null);
+  const [lessonPlan, setLessonPlan] = useState<LessonPlan | null>(null);
+  const [checkpointResults, setCheckpointResults] = useState<
+    { conceptTag: string; correct: boolean }[]
+  >([]);
+  const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
+  const [report, setReport] = useState<LearningReport | null>(null);
+  const [learningPath, setLearningPath] = useState<LearningPath | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingTopic, setPendingTopic] = useState<string | undefined>(undefined);
+  const [pendingDoc, setPendingDoc] = useState<DocumentSummary | null>(null);
+  const [pendingQuizResults, setPendingQuizResults] = useState<
+    { question: QuizQuestion; studentAnswer: string; correct: boolean }[] | null
+  >(null);
+
+  function goToConfig(params: { topic: string; doc?: DocumentSummary }) {
+    setPendingTopic(params.topic);
+    setPendingDoc(params.doc ?? null);
+    setError(null);
+    setStage("config");
+  }
+
+  async function startLesson(params: { topic: string; profile: LearnerProfile; docId?: string }) {
+    setProfile(params.profile);
+    setStage("planning");
+    setError(null);
+    try {
+      const res = await fetch("/api/lesson/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to plan lesson");
+      setLessonPlan(data);
+      setCheckpointResults([]);
+      setStage("teaching");
+    } catch (err) {
+      setError((err as Error).message);
+      setStage("config");
+    }
+  }
+
+  async function startLearningPath(params: { topic: string; profile: LearnerProfile }) {
+    setProfile(params.profile);
+    setStage("planning");
+    setError(null);
+    try {
+      const res = await fetch("/api/learning-path", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate the learning path");
+      setLearningPath(data);
+      setCurrentPath(data, 0);
+      setStage("path");
+    } catch (err) {
+      setError((err as Error).message);
+      setStage("config");
+    }
+  }
+
+  function handleTeachingComplete(result: {
+    checkpointResults: { conceptTag: string; correct: boolean }[];
+    finalPlan: LessonPlan;
+    transcript: TranscriptMessage[];
+  }) {
+    setCheckpointResults(result.checkpointResults);
+    setLessonPlan(result.finalPlan);
+    setTranscript(result.transcript);
+    setStage("quiz");
+  }
+
+  async function handleQuizFinished(
+    results: { question: QuizQuestion; studentAnswer: string; correct: boolean }[]
+  ) {
+    if (!lessonPlan) return;
+    setError(null);
+    setPendingQuizResults(results);
+    try {
+      const res = await fetch("/api/lesson/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lessonPlan,
+          quizResults: results,
+          checkpointResults,
+          language: lessonPlan.language,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate the learning report");
+      const reportData: LearningReport = data;
+      setReport(reportData);
+      setPendingQuizResults(null);
+      addHistoryEntry({
+        id: crypto.randomUUID(),
+        topic: lessonPlan.topic,
+        date: new Date().toISOString(),
+        language: lessonPlan.language,
+        subject: lessonPlan.subject,
+        scorePercent: reportData.scorePercent,
+        strongAreas: reportData.strongAreas,
+        weakAreas: reportData.weakAreas,
+        recommendation: reportData.recommendation,
+        transcript,
+        quiz: results.map((r) => ({
+          question: r.question.question,
+          studentAnswer: r.studentAnswer,
+          correct: r.correct,
+        })),
+      });
+      const mem = loadMemory();
+      if (mem.currentPath) advancePath();
+      setStage("report");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  function reset() {
+    setStage("home");
+    setLessonPlan(null);
+    setReport(null);
+    setCheckpointResults([]);
+    setTranscript([]);
+    setError(null);
+    setPendingTopic(undefined);
+    setPendingDoc(null);
+  }
+
+  function handleSelectPathStep(stepTitle: string, index: number) {
+    if (!profile || !learningPath) return;
+    setCurrentPath(learningPath, index);
+    startLesson({ topic: `${learningPath.topic} — ${stepTitle}`, profile });
+  }
+
+  const activeNav = stage === "dashboard" ? "progress" : stage === "home" ? "home" : "other";
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <AppShell active={activeNav} onGoHome={reset} onGoProgress={() => setStage("dashboard")}>
+      {error && (
+        <div className="max-w-2xl mx-auto mt-6 text-sm text-error bg-error-container/20 border border-error/30 rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap">
+          <span>{error}</span>
+          {pendingQuizResults && (
+            <button
+              onClick={() => handleQuizFinished(pendingQuizResults)}
+              className="px-3 py-1.5 rounded-full bg-error-container/40 border border-error/40 text-xs font-medium whitespace-nowrap"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+
+      {stage === "home" && (
+        <HomeDashboard
+          onProceed={goToConfig}
+          onRevise={(topic) => goToConfig({ topic })}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+      )}
+
+      {stage === "config" && (
+        <ConfigForm
+          initialTopic={pendingTopic}
+          initialDoc={pendingDoc}
+          onSubmit={startLesson}
+          onLearningPath={startLearningPath}
+          onBack={reset}
+        />
+      )}
+
+      {stage === "planning" && (
+        <div className="flex flex-col items-center justify-center min-h-[70vh] text-center space-y-4">
+          <div className="relative w-16 h-16">
+            <div className="absolute inset-0 rounded-full border-2 border-primary/20" />
+            <div className="absolute inset-0 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          </div>
+          <p className="text-sm text-on-surface-variant">Understanding the material and planning your lesson...</p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      )}
+
+      {stage === "path" && learningPath && (
+        <div className="p-container-padding lg:p-8">
+          <LearningPathPanel
+            path={learningPath}
+            currentStepIndex={loadMemory().currentStepIndex ?? 0}
+            onSelectStep={handleSelectPathStep}
+            onBack={reset}
+          />
         </div>
-      </main>
-    </div>
+      )}
+
+      {stage === "teaching" && lessonPlan && (
+        <TeachingSession lessonPlan={lessonPlan} onComplete={handleTeachingComplete} />
+      )}
+
+      {stage === "quiz" && lessonPlan && (
+        <div className="p-container-padding lg:p-8">
+          <QuizPanel lessonPlan={lessonPlan} language={lessonPlan.language} onFinished={handleQuizFinished} />
+        </div>
+      )}
+
+      {stage === "report" && report && (
+        <ReportPanel
+          report={report}
+          onRestart={reset}
+          onNextTopic={(topic) => profile && startLesson({ topic, profile })}
+        />
+      )}
+
+      {stage === "dashboard" && (
+        <div className="p-container-padding lg:p-8">
+          <LearnerDashboard onClose={reset} />
+        </div>
+      )}
+    </AppShell>
   );
 }
