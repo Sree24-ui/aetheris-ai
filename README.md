@@ -1,5 +1,7 @@
 # Aetheris AI — A Human-Like AI Educator That Teaches Through Video
 
+**🔗 Live demo: [ai-teacher-mu-seven.vercel.app](https://ai-teacher-mu-seven.vercel.app)**
+
 Built for the AI Innovation Hackathon 2026 — Round 2 Technical Assessment ("AI Teacher" challenge).
 
 The UI follows a dark, glassmorphic Material Design 3–inspired system (design tokens in [`src/app/globals.css`](src/app/globals.css), fonts Inter/Montserrat + Material Symbols in [`src/app/layout.tsx`](src/app/layout.tsx)): a sidebar/top-nav app shell ([`AppShell.tsx`](src/components/AppShell.tsx)), a dashboard home ([`HomeDashboard.tsx`](src/components/HomeDashboard.tsx)), a bubble-style lesson configuration screen ([`ConfigForm.tsx`](src/components/ConfigForm.tsx)), a "Classroom" teaching view with a video-frame avatar and an interactive chat transcript ([`TeachingSession.tsx`](src/components/TeachingSession.tsx)), and a "Lesson Complete" report with an animated score ring ([`ReportPanel.tsx`](src/components/ReportPanel.tsx)).
@@ -126,18 +128,28 @@ First document upload triggers a one-time download of the local embedding model 
 
 ## Deployment Instructions
 
-Deploys like any standard Next.js app (Vercel, or any Node host):
+The [live demo](https://ai-teacher-mu-seven.vercel.app) is deployed on Vercel directly from this repo. To deploy your own copy:
+
+```bash
+npm install -g vercel
+vercel link
+vercel env add OPENROUTER_API_KEY production   # and OPENROUTER_MODEL / OPENROUTER_FALLBACK_MODELS if overriding the defaults
+vercel --prod
+```
+
+It also deploys like any standard Next.js app to any Node host:
 
 ```bash
 npm run build
 npm start
 ```
 
-Set `OPENROUTER_API_KEY` (and optionally `OPENROUTER_MODEL` / `OPENROUTER_FALLBACK_MODELS`) as environment variables on the host. The `.data/documents` directory is filesystem-based storage for uploaded document vectors — on a serverless/ephemeral-filesystem host (e.g. Vercel serverless functions), uploaded documents will not persist between deployments/cold starts; for a persistent production deployment, swap `src/lib/vectorStore.ts`'s filesystem calls for a real database or object store.
+Set `OPENROUTER_API_KEY` (and optionally `OPENROUTER_MODEL` / `OPENROUTER_FALLBACK_MODELS`) as environment variables on the host. `src/lib/vectorStore.ts` writes uploaded-document vectors to `/tmp` when running on Vercel/Lambda (detected via `VERCEL`/`AWS_LAMBDA_FUNCTION_NAME`) and to a project-relative `.data/documents` folder otherwise — `/tmp` avoids the read-only-filesystem crash serverless platforms would otherwise hit, but it isn't guaranteed to persist between separate function invocations, so document upload/RAG is not fully reliable on the hosted demo (see Known Limitations). For a persistent production deployment, swap those filesystem calls for a real database or object store.
 
 ## Known Limitations
 
 - **Free-tier LLM latency/flakiness**: the default `OPENROUTER_MODEL` (`minimax/minimax-m3:free`) and its fallbacks are free, shared-pool models on OpenRouter and can be slow (10–60s) or occasionally time out entirely under load, despite the app's retry/fallback/timeout handling. Pointing `OPENROUTER_MODEL` at a paid model (e.g. `anthropic/claude-sonnet-4.5`) removes this limitation.
+- **Document upload/RAG on the hosted demo**: the live Vercel deployment stores uploaded-document vectors in `/tmp`. The upload step itself succeeds (parsing, chunking, local embeddings, and concept extraction all run fine), but in testing, the follow-up "plan a lesson from this document" request essentially always lands on a different serverless instance than the one that handled the upload and gets a "Document not found" error — Vercel's routing doesn't reliably reuse the same warm instance across separate requests. Treat "Upload material" as effectively local-only on this hosted demo; **topic-based teaching (no upload) works fully there**. Uploads work reliably end-to-end when self-hosted or run locally (`npm run dev`), where they're written to disk under `.data/documents` instead. Making uploads reliable on serverless would need swapping `src/lib/vectorStore.ts`'s filesystem calls for a real database or object store (e.g. a vector DB or S3-backed store) — noted above under Deployment Instructions.
 - **TTS voice availability/quality** depends on the browser/OS's installed voices; some environments have no voices for a given language, in which case the avatar's mouth won't move but the lesson still advances (via the watchdog) and on-screen text/visuals are still shown.
 - **Video export** uses tab capture (`getDisplayMedia`), which requires the user to grant screen-share permission each time and to enable "share tab audio" — it does not run headless/automatically.
 - **No server-side lesson persistence**: lesson/session state lives in the browser; refreshing mid-lesson restarts the current lesson (learner history/progress in `localStorage` is unaffected).

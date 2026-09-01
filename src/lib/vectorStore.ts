@@ -1,10 +1,18 @@
 import fs from "fs/promises";
+import os from "os";
 import path from "path";
 import { chunkText } from "./chunk";
 import { embedTexts, embedText, cosineSimilarity } from "./embeddings";
 import type { SourceChunkRef } from "./types";
 
-const DATA_DIR = path.join(process.cwd(), ".data", "documents");
+// Serverless platforms (e.g. Vercel) ship a read-only filesystem except for
+// `/tmp` — writing under the project directory there throws EROFS. Locally
+// (and on traditional Node hosts) keep using a project-relative folder so
+// uploaded documents are easy to find during development.
+const DATA_DIR =
+  process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
+    ? path.join(os.tmpdir(), "ai-teacher-documents")
+    : path.join(process.cwd(), ".data", "documents");
 
 interface StoredDoc {
   docId: string;
