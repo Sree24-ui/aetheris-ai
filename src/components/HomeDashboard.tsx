@@ -28,11 +28,13 @@ export default function HomeDashboard({ onProceed, onRevise }: Props) {
   const [memory, setMemory] = useState<LearnerMemory>(EMPTY_MEMORY);
 
   useEffect(() => {
-    // localStorage is unavailable during SSR; reading it here (rather than
-    // in the initial state) keeps the first client render matching the
-    // server-rendered HTML and avoids a hydration mismatch.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMemory(loadMemory());
+    let cancelled = false;
+    loadMemory().then((m) => {
+      if (!cancelled) setMemory(m);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function handleUploadClick() {

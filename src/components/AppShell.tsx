@@ -1,5 +1,6 @@
 "use client";
 
+import { useSession, signOut } from "next-auth/react";
 import Icon from "./Icon";
 
 interface AppShellProps {
@@ -10,6 +11,9 @@ interface AppShellProps {
 }
 
 export default function AppShell({ active, onGoHome, onGoProgress, children }: AppShellProps) {
+  const { data: session } = useSession();
+  const userLabel = session?.user?.name || session?.user?.email || "Signed in";
+
   return (
     <div className="flex flex-col md:flex-row min-h-screen">
       <div className="ambient-blob blob-1" />
@@ -55,7 +59,7 @@ export default function AppShell({ active, onGoHome, onGoProgress, children }: A
           </li>
         </ul>
 
-        <div className="mt-auto">
+        <div className="mt-auto space-y-3">
           <button
             onClick={onGoHome}
             className="btn-sheen w-full relative overflow-hidden bg-white/5 border border-primary/30 text-primary-fixed-dim rounded-full py-3 px-6 font-body-md text-body-md font-semibold transition-all hover:border-primary/60 hover:shadow-[0_0_20px_rgba(208,188,255,0.2)]"
@@ -65,6 +69,20 @@ export default function AppShell({ active, onGoHome, onGoProgress, children }: A
               Start Session
             </span>
           </button>
+
+          <div className="flex items-center gap-2 rounded-full bg-white/5 border border-white/10 p-1.5 pr-2">
+            <div className="w-7 h-7 rounded-full bg-primary-container/40 flex items-center justify-center shrink-0">
+              <Icon name="person" className="text-[16px] text-primary-fixed-dim" />
+            </div>
+            <span className="flex-1 text-xs text-on-surface-variant truncate">{userLabel}</span>
+            <button
+              onClick={() => signOut({ callbackUrl: "/" })}
+              title="Sign out"
+              className="p-1.5 rounded-full text-on-surface-variant hover:text-error hover:bg-error-container/20 transition-colors"
+            >
+              <Icon name="logout" className="text-[16px]" />
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -84,6 +102,13 @@ export default function AppShell({ active, onGoHome, onGoProgress, children }: A
             className={`p-2 rounded-full ${active === "progress" ? "text-primary-fixed-dim" : "text-on-surface-variant"}`}
           >
             <Icon name="analytics" filled={active === "progress"} />
+          </button>
+          <button
+            onClick={() => signOut({ callbackUrl: "/" })}
+            title="Sign out"
+            className="p-2 rounded-full text-on-surface-variant"
+          >
+            <Icon name="logout" />
           </button>
         </div>
       </header>

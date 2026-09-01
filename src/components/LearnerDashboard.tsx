@@ -10,13 +10,18 @@ const EMPTY_MEMORY: LearnerMemory = { history: [], weakConcepts: [], strongConce
 export default function LearnerDashboard({ onClose }: { onClose: () => void }) {
   const [memory, setMemory] = useState<LearnerMemory>(EMPTY_MEMORY);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // localStorage is unavailable during SSR; reading it here (rather than
-    // in the initial state) keeps the first client render matching the
-    // server-rendered HTML and avoids a hydration mismatch.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMemory(loadMemory());
+    let cancelled = false;
+    loadMemory().then((m) => {
+      if (cancelled) return;
+      setMemory(m);
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -69,7 +74,13 @@ export default function LearnerDashboard({ onClose }: { onClose: () => void }) {
           History
         </h3>
         <div className="space-y-2">
-          {memory.history.length === 0 && (
+          {loading && (
+            <div className="flex items-center gap-2 text-sm text-on-surface-variant">
+              <span className="w-4 h-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+              Loading your history...
+            </div>
+          )}
+          {!loading && memory.history.length === 0 && (
             <div className="text-sm text-on-surface-variant">No lessons completed yet.</div>
           )}
           {memory.history.map((h, i) => {
