@@ -18,8 +18,13 @@ CREATE TABLE IF NOT EXISTS users
   "emailVerified" TIMESTAMPTZ,
   image TEXT,
   password TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (id)
 );
+
+-- CREATE TABLE IF NOT EXISTS is a no-op on an already-existing users table,
+-- so this backfills the column for databases created before it was added.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 CREATE TABLE IF NOT EXISTS accounts
 (

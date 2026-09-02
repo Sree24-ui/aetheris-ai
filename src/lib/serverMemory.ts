@@ -1,6 +1,9 @@
 import { pool } from "./db";
 import type { LearnerMemory, LearnerHistoryEntry, LearningPath } from "./types";
 
+// How many most-recent lessons to load for a learner's dashboard/history view.
+const HISTORY_PAGE_SIZE = 50;
+
 interface HistoryRow {
   id: string;
   topic: string;
@@ -38,7 +41,7 @@ export async function loadMemoryForUser(userId: number): Promise<LearnerMemory> 
      FROM learner_history_entries
      WHERE user_id = $1
      ORDER BY occurred_at DESC
-     LIMIT 50`,
+     LIMIT ${HISTORY_PAGE_SIZE}`,
     [userId]
   );
   const history = rows.map(rowToEntry);
