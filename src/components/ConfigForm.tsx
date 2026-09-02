@@ -26,22 +26,32 @@ const STYLES = [
 interface Props {
   initialTopic?: string;
   initialDoc?: DocumentSummary | null;
+  // Restores the previous selections when the form is re-shown after a failed
+  // lesson build, so a timed-out model doesn't cost the learner their setup.
+  initialProfile?: LearnerProfile | null;
   onSubmit: (params: { topic: string; profile: LearnerProfile; docId?: string }) => void;
   onLearningPath: (params: { topic: string; profile: LearnerProfile }) => void;
   onBack: () => void;
 }
 
-export default function ConfigForm({ initialTopic, initialDoc, onSubmit, onLearningPath, onBack }: Props) {
+export default function ConfigForm({
+  initialTopic,
+  initialDoc,
+  initialProfile,
+  onSubmit,
+  onLearningPath,
+  onBack,
+}: Props) {
   const [instruction, setInstruction] = useState("");
   const [parsing, setParsing] = useState(false);
   const [topic, setTopic] = useState(initialTopic ?? "");
   const [doc, setDoc] = useState<DocumentSummary | null>(initialDoc ?? null);
   const [uploading, setUploading] = useState(false);
-  const [level, setLevel] = useState<LearnerProfile["level"]>("beginner");
-  const [minutes, setMinutes] = useState(20);
-  const [style, setStyle] = useState(STYLES[1].value);
-  const [language, setLanguage] = useState("English");
-  const [objective, setObjective] = useState("");
+  const [level, setLevel] = useState<LearnerProfile["level"]>(initialProfile?.level ?? "beginner");
+  const [minutes, setMinutes] = useState(initialProfile?.availableMinutes ?? 20);
+  const [style, setStyle] = useState(initialProfile?.style ?? STYLES[1].value);
+  const [language, setLanguage] = useState(initialProfile?.language ?? "English");
+  const [objective, setObjective] = useState(initialProfile?.objective ?? "");
   const [error, setError] = useState<string | null>(null);
 
   async function handleParseInstruction() {
@@ -156,18 +166,30 @@ export default function ConfigForm({ initialTopic, initialDoc, onSubmit, onLearn
                     </div>
                   </div>
                 )}
-                <button
-                  onClick={handleUploadClick}
-                  className="mt-auto text-xs text-on-surface-variant hover:text-tertiary-fixed-dim underline self-start"
-                >
-                  Replace document
-                </button>
+                <div className="mt-auto flex items-center gap-4">
+                  <button
+                    onClick={handleUploadClick}
+                    disabled={uploading}
+                    className="text-xs text-on-surface-variant hover:text-tertiary-fixed-dim underline disabled:opacity-50"
+                  >
+                    {uploading ? "Processing..." : "Replace document"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDoc(null);
+                      setError(null);
+                    }}
+                    className="text-xs text-on-surface-variant hover:text-error underline"
+                  >
+                    Remove
+                  </button>
+                </div>
               </>
             ) : (
               <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center py-8">
                 <Icon name="upload_file" className="text-5xl text-outline" />
                 <p className="text-sm text-on-surface-variant max-w-xs">
-                  No document uploaded — the AI Teacher will teach from general subject knowledge for this topic.
+                  No document uploaded — Aetheris will teach from general subject knowledge for this topic.
                 </p>
                 <button
                   onClick={handleUploadClick}

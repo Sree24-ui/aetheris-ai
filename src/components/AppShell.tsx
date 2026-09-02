@@ -2,15 +2,17 @@
 
 import { useSession, signOut } from "next-auth/react";
 import Icon from "./Icon";
+import UserAvatar from "./UserAvatar";
 
 interface AppShellProps {
-  active: "home" | "progress" | "other";
+  active: "home" | "progress" | "profile" | "other";
   onGoHome: () => void;
   onGoProgress: () => void;
+  onGoProfile: () => void;
   children: React.ReactNode;
 }
 
-export default function AppShell({ active, onGoHome, onGoProgress, children }: AppShellProps) {
+export default function AppShell({ active, onGoHome, onGoProgress, onGoProfile, children }: AppShellProps) {
   const { data: session } = useSession();
   const userLabel = session?.user?.name || session?.user?.email || "Signed in";
 
@@ -57,6 +59,19 @@ export default function AppShell({ active, onGoHome, onGoProgress, children }: A
               Progress
             </button>
           </li>
+          <li>
+            <button
+              onClick={onGoProfile}
+              className={`w-full flex items-center gap-4 rounded-full p-3 font-body-md text-body-md transition-all ${
+                active === "profile"
+                  ? "bg-primary-container/20 text-primary-fixed-dim"
+                  : "text-on-surface-variant hover:bg-white/10 hover:text-tertiary-fixed-dim"
+              }`}
+            >
+              <Icon name="person" filled={active === "profile"} />
+              Profile
+            </button>
+          </li>
         </ul>
 
         <div className="mt-auto space-y-3">
@@ -71,10 +86,10 @@ export default function AppShell({ active, onGoHome, onGoProgress, children }: A
           </button>
 
           <div className="flex items-center gap-2 rounded-full bg-white/5 border border-white/10 p-1.5 pr-2">
-            <div className="w-7 h-7 rounded-full bg-primary-container/40 flex items-center justify-center shrink-0">
-              <Icon name="person" className="text-[16px] text-primary-fixed-dim" />
-            </div>
-            <span className="flex-1 text-xs text-on-surface-variant truncate">{userLabel}</span>
+            <button onClick={onGoProfile} className="flex items-center gap-2 flex-1 min-w-0 text-left" title="View profile">
+              <UserAvatar name={session?.user?.name} email={session?.user?.email} image={session?.user?.image} size={28} />
+              <span className="flex-1 text-xs text-on-surface-variant truncate">{userLabel}</span>
+            </button>
             <button
               onClick={() => signOut({ callbackUrl: "/" })}
               title="Sign out"
@@ -103,6 +118,9 @@ export default function AppShell({ active, onGoHome, onGoProgress, children }: A
           >
             <Icon name="analytics" filled={active === "progress"} />
           </button>
+          <button onClick={onGoProfile} className="p-1 rounded-full" title="Profile">
+            <UserAvatar name={session?.user?.name} email={session?.user?.email} image={session?.user?.image} size={28} />
+          </button>
           <button
             onClick={() => signOut({ callbackUrl: "/" })}
             title="Sign out"
@@ -113,7 +131,11 @@ export default function AppShell({ active, onGoHome, onGoProgress, children }: A
         </div>
       </header>
 
-      <main className="flex-1 md:ml-64 min-h-screen relative z-10 w-full">{children}</main>
+      {/* No `w-full` here: with the fixed 256px sidebar's `md:ml-64`, a full
+          100% width plus that margin overflowed the viewport by exactly the
+          sidebar width (clipping content at tablet sizes). `flex-1` plus
+          `min-w-0` sizes it to the remaining space instead. */}
+      <main className="flex-1 min-w-0 md:ml-64 min-h-screen relative z-10">{children}</main>
     </div>
   );
 }

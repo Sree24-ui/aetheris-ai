@@ -29,11 +29,14 @@ export default function Avatar({ speaking, mouthOpen }: AvatarProps) {
     };
   }, []);
 
+  // `max-h-full` lets the avatar scale down when the stage is short instead of
+  // pushing the captions out of the frame; the viewBox preserves the aspect
+  // ratio, so shrinking letterboxes rather than distorts.
   return (
-    <div className="flex items-center justify-center w-full h-full">
+    <div className="flex items-center justify-center w-full h-full min-h-0">
       <svg
         viewBox="0 0 240 240"
-        className="w-56 h-56 md:w-72 md:h-72 drop-shadow-lg"
+        className="w-56 h-56 md:w-72 md:h-72 max-h-full max-w-full drop-shadow-lg"
         style={{ transition: "transform 0.3s ease" }}
       >
         <ellipse cx="120" cy="225" rx="70" ry="14" fill="#00000022" />
