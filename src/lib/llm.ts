@@ -9,7 +9,7 @@ import { APP_NAME } from "./appConfig";
 const GEMINI_BASE_URL =
   process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta";
 
-const MODEL_ID = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const MODEL_ID = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 
 // How long to wait on a single request before aborting and retrying.
 const REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 30_000;
