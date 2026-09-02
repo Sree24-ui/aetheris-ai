@@ -67,6 +67,11 @@ export function useSpeech() {
       window.speechSynthesis.cancel();
     }
     if (mouthTimerRef.current) clearInterval(mouthTimerRef.current);
+    // Also drop the pending watchdog — otherwise it fires minutes later and
+    // resolves an utterance nobody is waiting on any more (and, on unmount,
+    // touches state after teardown).
+    if (watchdogRef.current) clearTimeout(watchdogRef.current);
+    finishRef.current = null;
     setMouthOpen(false);
     setState("idle");
   }, []);

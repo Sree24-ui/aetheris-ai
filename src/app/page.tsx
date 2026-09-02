@@ -130,7 +130,7 @@ export default async function LandingPage() {
           <div className="relative h-[420px] hidden lg:block">
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-44 h-44 rounded-full glass-panel flex flex-col items-center justify-center gap-2 shadow-2xl">
               <Icon name="face" className="text-4xl text-primary-fixed-dim" filled />
-              <span className="text-xs font-semibold text-on-surface text-center px-4">AI Teacher</span>
+              <span className="text-xs font-semibold text-on-surface text-center px-4">Aetheris AI</span>
             </div>
             <div className="absolute top-4 right-8 w-32 h-32 rounded-full glass-panel flex flex-col items-center justify-center gap-1.5 animate-float">
               <Icon name="quiz" className="text-2xl text-secondary-fixed-dim" />

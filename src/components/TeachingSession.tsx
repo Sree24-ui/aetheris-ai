@@ -47,6 +47,7 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
     { conceptTag: string; correct: boolean }[]
   >([]);
   const [translating, setTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [playToken, setPlayToken] = useState(0);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -77,6 +78,16 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
+
+  // Esc (or the browser's own fullscreen UI) exits fullscreen without going
+  // through our button, which would otherwise leave the icon showing the
+  // wrong state. Track the document instead of assuming our click is the
+  // only way in and out.
+  useEffect(() => {
+    const sync = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
 
   useEffect(() => {
     // React Strict Mode (dev only) invokes effects twice on mount to surface
@@ -207,37 +218,66 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
     if (newLang === language) return;
     stop();
     setTranslating(true);
+    setTranslateError(null);
     try {
       const updated = [...sectionsRef.current];
-      for (let i = index; i < updated.length; i++) {
-        const res = await fetch("/api/lesson/translate-section", {
+      // Translated in parallel rather than one-at-a-time: a 10-section lesson
+      // used to serialize 10 LLM round-trips (well over a minute of dead air)
+      // before the learner could continue in the new language.
+      const pending = updated.slice(index).map((sec, offset) =>
+        fetch("/api/lesson/translate-section", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ section: updated[i], targetLanguage: newLang }),
-        });
-        if (res.ok) updated[i] = await res.json();
+          body: JSON.stringify({ section: sec, targetLanguage: newLang }),
+        })
+          .then(async (res) => (res.ok ? { i: index + offset, section: await res.json() } : null))
+          .catch(() => null)
+      );
+      const settled = await Promise.all(pending);
+      const failed = settled.filter((r) => r === null).length;
+      for (const r of settled) {
+        if (r) updated[r.i] = r.section;
       }
       setSections(updated);
       setLanguage(newLang);
       setPlayToken((t) => t + 1);
+      if (failed > 0) {
+        setTranslateError(
+          `${failed} of ${settled.length} sections couldn't be translated and stayed in the original language.`
+        );
+      }
     } finally {
       setTranslating(false);
     }
   }
 
   function togglePlayPause() {
-    if (speechState === "speaking") pause();
-    else if (speechState === "paused") resume();
+    if (speechState === "speaking") {
+      pause();
+    } else if (speechState === "paused") {
+      resume();
+    } else {
+      // Idle: narration already finished. Previously this did nothing at all,
+      // leaving a play button that looked enabled but was inert. Re-read the
+      // current text instead (the question once we're at the checkpoint).
+      const sec = sectionsRef.current[index];
+      if (!sec) return;
+      const text =
+        phase === "checkpoint" || phase === "evaluating"
+          ? sec.checkpoint?.question
+          : [sec.narration, sec.example ? `For example: ${sec.example}` : ""].filter(Boolean).join(" ");
+      if (text) speak(text, languageRef.current);
+    }
   }
 
   async function toggleFullscreen() {
     if (!videoFrameRef.current) return;
+    // State is set by the fullscreenchange listener above, so it stays correct
+    // even when the request is rejected or the user leaves another way.
     if (!document.fullscreenElement) {
       await videoFrameRef.current.requestFullscreen().catch(() => {});
-      setFullscreen(true);
     } else {
       await document.exitFullscreen().catch(() => {});
-      setFullscreen(false);
     }
   }
 
@@ -247,8 +287,8 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
   const isAnswering = phase === "checkpoint" || phase === "evaluating";
 
   return (
-    <div className="flex flex-col lg:flex-row gap-element-gap px-container-padding lg:px-element-gap py-element-gap lg:h-screen">
-      <div className="flex-1 flex flex-col gap-element-gap min-w-0">
+    <div className="flex flex-col lg:flex-row gap-element-gap px-container-padding lg:px-element-gap py-element-gap lg:max-h-screen lg:overflow-hidden">
+      <div className="flex-1 flex flex-col gap-element-gap min-w-0 lg:overflow-y-auto">
         <div className="flex items-center gap-3 flex-wrap">
           <div className="flex-1 min-w-[200px]">
             <div className="glass-panel rounded-full h-3 w-full overflow-hidden">
@@ -277,29 +317,39 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
         {translating && (
           <div className="text-xs text-primary-fixed-dim">Switching language, keeping lesson context...</div>
         )}
+        {translateError && !translating && (
+          <div className="text-xs text-error">{translateError}</div>
+        )}
 
+        {/* Controls sit in normal flow below the stage rather than absolutely
+            over it: with `pb-20` reservation alone, a tall caption on a short
+            viewport grew straight under the buttons and they covered the
+            words. Flow layout makes overlap structurally impossible. */}
         <div
           ref={videoFrameRef}
-          className="glass-panel rounded-xl flex-1 relative overflow-hidden min-h-[420px] flex flex-col items-center justify-center gap-4 p-6 pb-20"
+          className="glass-panel rounded-xl flex-1 relative overflow-hidden min-h-[320px] sm:min-h-[420px] flex flex-col items-center gap-4 p-6"
         >
           <div className="absolute inset-0 bg-gradient-to-br from-primary-container/10 via-transparent to-secondary-container/10" />
-          <div className="relative z-10 shrink-0">
-            <Avatar speaking={speechState === "speaking"} mouthOpen={mouthOpen} />
+
+          <div className="relative z-10 flex-1 min-h-0 w-full flex flex-col items-center justify-center gap-4">
+            <div className="flex-1 min-h-0 w-full flex items-center justify-center">
+              <Avatar speaking={speechState === "speaking"} mouthOpen={mouthOpen} />
+            </div>
+
+            {showCaptions && (
+              <div className="w-full flex justify-center px-2 min-h-0">
+                <div className="glass-panel px-5 py-3 rounded-xl max-w-lg max-h-28 overflow-y-auto text-center">
+                  <p className="font-body-md text-on-surface text-sm">
+                    {phase === "checkpoint" || phase === "evaluating"
+                      ? section.checkpoint?.question
+                      : section.narration}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
 
-          {showCaptions && (
-            <div className="relative z-10 w-full flex justify-center px-2">
-              <div className="glass-panel px-5 py-3 rounded-xl max-w-lg max-h-28 overflow-y-auto text-center">
-                <p className="font-body-md text-on-surface text-sm">
-                  {phase === "checkpoint" || phase === "evaluating"
-                    ? section.checkpoint?.question
-                    : section.narration}
-                </p>
-              </div>
-            </div>
-          )}
-
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 z-10">
+          <div className="relative shrink-0 flex gap-3 z-10">
             <button
               onClick={togglePlayPause}
               className="bg-surface-variant/80 p-3 rounded-full backdrop-blur-md hover:bg-primary-container/50 transition-colors text-primary"

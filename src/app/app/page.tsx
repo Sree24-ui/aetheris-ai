@@ -18,9 +18,10 @@ import QuizPanel from "@/components/QuizPanel";
 import ReportPanel from "@/components/ReportPanel";
 import LearningPathPanel from "@/components/LearningPathPanel";
 import LearnerDashboard from "@/components/LearnerDashboard";
+import ProfileDashboard from "@/components/ProfileDashboard";
 import { addHistoryEntry, setCurrentPath, advancePath, loadMemory } from "@/lib/memory";
 
-type Stage = "home" | "config" | "planning" | "teaching" | "quiz" | "report" | "path" | "dashboard";
+type Stage = "home" | "config" | "planning" | "teaching" | "quiz" | "report" | "path" | "dashboard" | "profile";
 
 export default function Home() {
   const [stage, setStage] = useState<Stage>("home");
@@ -49,6 +50,9 @@ export default function Home() {
 
   async function startLesson(params: { topic: string; profile: LearnerProfile; docId?: string }) {
     setProfile(params.profile);
+    // Remembered so returning to the form after a failure restores exactly
+    // what was submitted rather than resetting to defaults.
+    setPendingTopic(params.topic);
     setStage("planning");
     setError(null);
     try {
@@ -70,6 +74,7 @@ export default function Home() {
 
   async function startLearningPath(params: { topic: string; profile: LearnerProfile }) {
     setProfile(params.profile);
+    setPendingTopic(params.topic);
     setStage("planning");
     setError(null);
     try {
@@ -166,10 +171,16 @@ export default function Home() {
     startLesson({ topic: `${learningPath.topic} — ${stepTitle}`, profile });
   }
 
-  const activeNav = stage === "dashboard" ? "progress" : stage === "home" ? "home" : "other";
+  const activeNav =
+    stage === "dashboard" ? "progress" : stage === "profile" ? "profile" : stage === "home" ? "home" : "other";
 
   return (
-    <AppShell active={activeNav} onGoHome={reset} onGoProgress={() => setStage("dashboard")}>
+    <AppShell
+      active={activeNav}
+      onGoHome={reset}
+      onGoProgress={() => setStage("dashboard")}
+      onGoProfile={() => setStage("profile")}
+    >
       {error && (
         <div className="max-w-2xl mx-auto mt-6 text-sm text-error bg-error-container/20 border border-error/30 rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap">
           <span>{error}</span>
@@ -195,6 +206,7 @@ export default function Home() {
         <ConfigForm
           initialTopic={pendingTopic}
           initialDoc={pendingDoc}
+          initialProfile={profile}
           onSubmit={startLesson}
           onLearningPath={startLearningPath}
           onBack={reset}
@@ -243,6 +255,12 @@ export default function Home() {
       {stage === "dashboard" && (
         <div className="p-container-padding lg:p-8">
           <LearnerDashboard onClose={reset} />
+        </div>
+      )}
+
+      {stage === "profile" && (
+        <div className="p-container-padding lg:p-8">
+          <ProfileDashboard onClose={reset} />
         </div>
       )}
     </AppShell>

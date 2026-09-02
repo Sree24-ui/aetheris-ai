@@ -3,6 +3,7 @@ import { Inter, Montserrat } from "next/font/google";
 import "./globals.css";
 import "katex/dist/katex.min.css";
 import AuthProvider from "@/components/AuthProvider";
+import { APP_NAME, APP_DESCRIPTION, APP_URL } from "@/lib/appConfig";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -16,8 +17,16 @@ const montserrat = Montserrat({
 });
 
 export const metadata: Metadata = {
-  title: "Aetheris AI",
-  description: "A human-like AI educator that teaches through video",
+  metadataBase: new URL(APP_URL),
+  title: APP_NAME,
+  description: APP_DESCRIPTION,
+  openGraph: {
+    title: APP_NAME,
+    description: APP_DESCRIPTION,
+    url: APP_URL,
+    siteName: APP_NAME,
+    type: "website",
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

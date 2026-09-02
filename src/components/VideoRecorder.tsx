@@ -95,7 +95,7 @@ export default function VideoRecorder() {
       {downloadUrl && (
         <a
           href={downloadUrl}
-          download={`ai-teacher-lesson.${fileExtension}`}
+          download={`aetheris-ai-lesson.${fileExtension}`}
           className="px-3 py-1.5 rounded-full border border-secondary/50 text-secondary-fixed-dim"
         >
           ⬇ Download video
