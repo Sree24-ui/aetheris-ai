@@ -32,7 +32,15 @@ function SignInForm() {
         redirect: false,
       });
       if (result?.error) {
-        setError("Incorrect email or password.");
+        // Only "CredentialsSignin" actually means the email/password was
+        // wrong. Anything else (a missing AUTH_SECRET, an unreachable
+        // database) is a server problem, and reporting it as bad credentials
+        // sends the user off resetting a password that was never the issue.
+        setError(
+          result.error === "CredentialsSignin"
+            ? "Incorrect email or password."
+            : "Sign-in is unavailable right now — the server could not complete the request. Check the server logs; a missing DATABASE_URL or AUTH_SECRET is the usual cause."
+        );
       } else {
         router.push(callbackUrl);
         router.refresh();
@@ -119,9 +127,17 @@ function SignInForm() {
       </div>
 
       <button
-        onClick={() => {
+        onClick={async () => {
           setGoogleLoading(true);
-          signIn("google", { callbackUrl });
+          try {
+            await signIn("google", { callbackUrl });
+          } catch {
+            // Google is only configured in preview/production; locally the
+            // redirect fails and the button would otherwise spin forever.
+            setError("Google sign-in is unavailable. Use email and password, or set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.");
+          } finally {
+            setGoogleLoading(false);
+          }
         }}
         disabled={googleLoading}
         className="w-full py-3.5 rounded-full border border-white/15 text-on-surface font-medium flex items-center justify-center gap-3 hover:bg-white/5 transition-colors disabled:opacity-60"

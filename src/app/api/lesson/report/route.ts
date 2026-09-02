@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toErrorResponse } from "@/lib/llmError";
 import { generateReport } from "@/lib/teachingAgent";
 
 export const runtime = "nodejs";
@@ -10,6 +11,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(report);
   } catch (err) {
     console.error(err);
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+    // Preserves the real cause (quota, bad key, timeout) and its status code
+    // instead of flattening every failure into an opaque 500.
+    const { body, status } = toErrorResponse(err);
+    return NextResponse.json(body, { status });
   }
 }

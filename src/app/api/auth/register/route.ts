@@ -40,6 +40,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error(err);
+    // With DATABASE_URL unset, `pg` quietly falls back to localhost:5432 and
+    // the failure surfaces as a connection error. Naming that beats "failed
+    // to create account", which reads as though the details were rejected.
+    const code = (err as { code?: string }).code;
+    if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "ETIMEDOUT") {
+      return NextResponse.json(
+        { error: "Could not reach the database. Check that DATABASE_URL is set in .env.local and the schema has been applied (npm run migrate)." },
+        { status: 503 }
+      );
+    }
+    if (code === "42P01") {
+      return NextResponse.json(
+        { error: "The database is reachable but the tables are missing. Run: npm run migrate" },
+        { status: 503 }
+      );
+    }
     return NextResponse.json({ error: "Failed to create account." }, { status: 500 });
   }
 }

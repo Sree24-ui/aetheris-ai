@@ -37,12 +37,12 @@ function profileBlock(profile: LearnerProfile): string {
 export async function extractConcepts(sampleText: string): Promise<string[]> {
   const system = `You scan a short excerpt from an uploaded educational document and list the key concepts/topics it covers, as they would appear as short tags. ${JSON_ONLY}`;
   const user = `Excerpt:\n${sampleText}\n\nReturn JSON: { "concepts": string[] } — 4 to 6 short (1-4 word) concept tags, in the document's own language.`;
-  try {
-    const result = await callModelJSON<{ concepts: string[] }>(system, user, 300);
-    return Array.isArray(result.concepts) ? result.concepts.slice(0, 6) : [];
-  } catch {
-    return [];
-  }
+  // Deliberately not swallowing failures here any more: returning [] made a
+  // quota-blocked extraction indistinguishable from a document that genuinely
+  // has no concepts, so the panel just looked broken. The caller decides how
+  // to degrade.
+  const result = await callModelJSON<{ concepts: string[] }>(system, user, 300);
+  return Array.isArray(result.concepts) ? result.concepts.slice(0, 6) : [];
 }
 
 export async function parseInstruction(freeText: string): Promise<{
@@ -68,6 +68,55 @@ Return JSON with any fields you can confidently infer (omit fields you cannot in
   return callModelJSON(system, user, 512);
 }
 
+/**
+ * Free-form Q&A during a lesson.
+ *
+ * Kept separate from `evaluateAnswer`: that one grades a checkpoint the teacher
+ * asked, this one answers a question the *student* asked, which must not affect
+ * scoring and must not drag the lesson off course.
+ */
+export async function answerQuestion(params: {
+  question: string;
+  lessonTopic: string;
+  sectionTitle: string;
+  sectionContext: string;
+  language: string;
+  history: { role: "ai" | "user"; text: string }[];
+}): Promise<{ answer: string; suggestedFollowUps: string[] }> {
+  const { question, lessonTopic, sectionTitle, sectionContext, language, history } = params;
+
+  const system = `You are the student's AI teacher, answering a question they asked mid-lesson.
+
+Rules:
+- Answer the question directly first, then add at most one clarifying detail.
+- Stay anchored to the lesson: connect the answer back to what is being taught.
+- Be concrete. Use a specific number, worked step, or named example rather than a general description.
+- Keep it short enough to be spoken aloud: 2-4 sentences.
+- If the question is off-topic, answer briefly and steer back to the lesson in one clause.
+- If you genuinely do not know, say so instead of inventing specifics.
+Respond in ${language}. ${JSON_ONLY}`;
+
+  // Only the tail of the conversation is sent: enough for pronouns and
+  // follow-ups to resolve, without growing the prompt (and the bill) as the
+  // lesson goes on.
+  const recent = history.slice(-6).map((m) => `${m.role === "ai" ? "Teacher" : "Student"}: ${m.text}`);
+
+  const user = `Lesson topic: ${lessonTopic}
+Current section: ${sectionTitle}
+What was just taught: ${sectionContext}
+
+${recent.length ? `Recent conversation:\n${recent.join("\n")}\n` : ""}
+Student's question: "${question}"
+
+Return JSON:
+{
+  "answer": string,                 // spoken-style answer in ${language}
+  "suggestedFollowUps": string[]    // 0-2 short follow-up questions the student might ask next, in ${language}
+}`;
+
+  return callModelJSON<{ answer: string; suggestedFollowUps: string[] }>(system, user, 1024);
+}
+
 export async function planLesson(params: {
   topic: string;
   profile: LearnerProfile;
@@ -83,6 +132,13 @@ Rules:
 - Break the lesson into sections. Each section introduces or builds on ONE concept at a time.
 - Explanations must progress from simple to complex, matching the learner's level.
 - Every 1-2 sections should include a "checkpoint" question that tests the concept just taught (not every single section needs one, but most should).
+
+Be specific, not generic. This is the difference between a good lesson and a useless one:
+- Every section's "example" must be a CONCRETE worked case — real numbers, a named system, an actual code snippet or a specific scenario. Never "for example, consider a simple case".
+- Narration must teach the actual content, not describe what will be taught. Write "Force equals mass times acceleration, so a 2 kg mass at 3 m/s² needs 6 N", never "in this section we will explore the relationship between force and mass".
+- Ban filler openers ("Let's dive in", "In today's lesson", "As we all know") and empty summaries ("In conclusion, this is an important topic").
+- Prefer the precise term over the vague one, and define it the first time you use it.
+- Checkpoint questions must require applying the concept, not recalling a word from the narration.
 - Adjust total depth/number of sections to fit the available time: 5 minutes -> 2-3 concise sections, 20 minutes -> 4-6 sections, 60 minutes -> 7-10 sections with deeper explanation, examples, and more checkpoints.
 - All narration and text MUST be written in the learner's preferred teaching language.
 - ${isDocumentGrounded ? "Base the lesson strictly on the provided source material context. Do not invent facts not supported by it. If the context is insufficient for a sub-topic, note that briefly rather than fabricating specifics." : "No source material was provided; teach the topic from general subject knowledge, appropriate to the learner's level."}

@@ -130,6 +130,11 @@ export interface DocumentSummary {
   language: string;
   preview: string;
   concepts: string[];
+  /**
+   * Set when the document indexed fine but concept extraction failed (quota,
+   * timeout). Distinguishes "no concepts found" from "couldn't look".
+   */
+  conceptsWarning?: string;
 }
 
 export interface TranscriptMessage {

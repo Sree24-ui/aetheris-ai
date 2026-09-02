@@ -157,6 +157,17 @@ a[href]:active,
   box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.25);
 }
 
+/* Floating menus must occlude what sits behind them. .glass-panel is 4% white,
+   which reads fine against the page background but turns unreadable when a
+   popover floats over busy content like the avatar stage. */
+.glass-popover {
+  background: color-mix(in srgb, var(--color-surface-container-high) 97%, transparent);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+}
+
 .glow-hover {
   transition: border-color 0.3s, box-shadow 0.3s, transform 0.2s;
 }

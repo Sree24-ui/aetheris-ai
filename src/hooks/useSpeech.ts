@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DEFAULT_VOICE_PREFS, type VoicePrefs } from "@/lib/voicePrefs";
 
 const LANGUAGE_TO_BCP47: Record<string, string> = {
   english: "en-US",
@@ -35,10 +36,17 @@ export function languageToBCP47(language: string): string {
 
 export type SpeechState = "idle" | "speaking" | "paused";
 
-export function useSpeech() {
+export function useSpeech(prefs: VoicePrefs = DEFAULT_VOICE_PREFS) {
   const [state, setState] = useState<SpeechState>("idle");
   const [mouthOpen, setMouthOpen] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  // Read through a ref so changing a slider mid-lesson does not give `speak`
+  // a new identity and re-trigger the narration effect that depends on it.
+  // Synced in an effect rather than during render, which React forbids.
+  const prefsRef = useRef(prefs);
+  useEffect(() => {
+    prefsRef.current = prefs;
+  }, [prefs]);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const mouthTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -54,10 +62,28 @@ export function useSpeech() {
 
   const pickVoice = useCallback(
     (bcp47: string): SpeechSynthesisVoice | undefined => {
+      // An explicit choice wins, but only while it can still speak the lesson's
+      // language — a learner who picked a French voice and then switched the
+      // lesson to Hindi should get a Hindi voice, not French-accented Hindi.
+      const chosenURI = prefsRef.current.voiceURI;
+      if (chosenURI) {
+        const chosen = voices.find((v) => v.voiceURI === chosenURI);
+        const prefix = bcp47.split("-")[0].toLowerCase();
+        if (chosen && chosen.lang.toLowerCase().startsWith(prefix)) return chosen;
+      }
       const exact = voices.find((v) => v.lang.toLowerCase() === bcp47.toLowerCase());
       if (exact) return exact;
       const prefix = bcp47.split("-")[0];
       return voices.find((v) => v.lang.toLowerCase().startsWith(prefix));
+    },
+    [voices]
+  );
+
+  /** Voices that can speak the given teaching language, for the picker UI. */
+  const voicesForLanguage = useCallback(
+    (language: string): SpeechSynthesisVoice[] => {
+      const prefix = languageToBCP47(language).split("-")[0].toLowerCase();
+      return voices.filter((v) => v.lang.toLowerCase().startsWith(prefix));
     },
     [voices]
   );
@@ -89,8 +115,10 @@ export function useSpeech() {
         utterance.lang = bcp47;
         const voice = pickVoice(bcp47);
         if (voice) utterance.voice = voice;
-        utterance.rate = 0.98;
-        utterance.pitch = 1.02;
+        const { rate, pitch, volume } = prefsRef.current;
+        utterance.rate = rate;
+        utterance.pitch = pitch;
+        utterance.volume = volume;
 
         let settled = false;
         const finish = () => {
@@ -109,7 +137,12 @@ export function useSpeech() {
         // Without a watchdog, the lesson would hang forever waiting on
         // narration that will never "finish". Cap the wait at a generous
         // estimate of spoken duration so the lesson always keeps moving.
-        const estimatedMs = Math.min(30_000, Math.max(4000, text.length * 90));
+        // Scaled by rate: at 0.5x the same sentence takes twice as long, and a
+        // watchdog that ignored that would cut slow narration off mid-word.
+        const estimatedMs = Math.min(
+          60_000,
+          Math.max(4000, (text.length * 90) / Math.max(0.5, rate))
+        );
         watchdogRef.current = setTimeout(finish, estimatedMs);
 
         utterance.onstart = () => {
@@ -160,5 +193,15 @@ export function useSpeech() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { speak, stop, pause, resume, state, mouthOpen, voicesReady: voices.length > 0 };
+  return {
+    speak,
+    stop,
+    pause,
+    resume,
+    state,
+    mouthOpen,
+    voices,
+    voicesForLanguage,
+    voicesReady: voices.length > 0,
+  };
 }

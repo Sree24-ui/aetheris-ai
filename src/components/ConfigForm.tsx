@@ -65,14 +65,29 @@ export default function ConfigForm({
         body: JSON.stringify({ text: instruction }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Could not parse instruction");
+      if (!res.ok) throw new Error(data.error || "Could not parse that instruction.");
       if (data.topic) setTopic(data.topic);
       if (data.level) setLevel(data.level);
       if (data.language) setLanguage(data.language);
       if (data.availableMinutes) setMinutes(data.availableMinutes);
       if (data.objective) setObjective(data.objective);
-    } catch {
-      setError("Could not parse instruction. Fill the fields manually below.");
+      // A 200 that filled in nothing is still a failure from the learner's
+      // point of view — say so rather than leaving the form silently unchanged.
+      const filledAnything =
+        data.topic || data.level || data.language || data.availableMinutes || data.objective;
+      if (!filledAnything) {
+        setError("Couldn't pull any settings out of that. Try naming the topic, level or language.");
+      }
+    } catch (err) {
+      // Surface the real reason (quota exhausted, bad key, timeout). The old
+      // blanket message hid account-level problems behind what looked like a
+      // parsing bug, which made every failure look the same.
+      const reason = (err as Error).message?.trim();
+      setError(
+        reason
+          ? `${reason} You can still fill the fields in manually below.`
+          : "Could not parse that instruction. Fill the fields in manually below."
+      );
     } finally {
       setParsing(false);
     }
@@ -116,14 +131,17 @@ export default function ConfigForm({
   }
 
   return (
-    <div className="max-w-[1600px] mx-auto w-full p-container-padding lg:p-8 my-4">
+    <div className="max-w-[1400px] mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
       <button onClick={onBack} className="text-on-surface-variant hover:text-tertiary-fixed-dim text-sm flex items-center gap-1 mb-6">
         <Icon name="arrow_back" className="text-[18px]" /> Back
       </button>
 
-      <div className="flex flex-col lg:flex-row gap-element-gap">
-        <aside className="w-full lg:w-1/3 flex flex-col gap-6">
-          <div className="glass-panel rounded-2xl p-6 h-full flex flex-col gap-6 relative overflow-hidden">
+      {/* Sidebar is a fixed width rather than a third of the page, and sticks
+          to its own height instead of stretching: at 1/3 + h-full it grew into
+          a tall mostly-empty box while squeezing the form into a narrow column. */}
+      <div className="flex flex-col lg:flex-row gap-6 xl:gap-10 items-start">
+        <aside className="w-full lg:w-[20rem] xl:w-[22rem] shrink-0 lg:sticky lg:top-6">
+          <div className="glass-panel rounded-2xl p-6 flex flex-col gap-6 relative overflow-hidden min-h-[22rem]">
             <div className="flex items-center justify-between">
               <h2 className="font-headline-md text-headline-md text-primary-fixed-dim flex items-center gap-2">
                 <Icon name="description" className="text-3xl" />
@@ -149,6 +167,11 @@ export default function ConfigForm({
                     </p>
                   </div>
                 </div>
+                {doc.conceptsWarning && (
+                  <p className="text-xs text-tertiary-fixed-dim bg-tertiary/10 border border-tertiary/25 rounded-lg p-2.5">
+                    {doc.conceptsWarning}
+                  </p>
+                )}
                 {doc.concepts.length > 0 && (
                   <div className="flex-grow flex flex-col gap-4">
                     <h4 className="font-label-caps text-label-caps text-on-surface-variant uppercase tracking-widest">
@@ -203,8 +226,8 @@ export default function ConfigForm({
           </div>
         </aside>
 
-        <section className="w-full lg:w-2/3 flex flex-col gap-8">
-          <div className="mb-2">
+        <section className="w-full flex-1 min-w-0 flex flex-col gap-7">
+          <div>
             <h1 className="font-display-lg text-display-lg-mobile md:text-display-lg text-on-surface mb-2">Configure Session</h1>
             <p className="font-body-lg text-body-lg text-on-surface-variant max-w-2xl">
               Tailor your AI mentor&apos;s approach for this session.
@@ -238,7 +261,9 @@ export default function ConfigForm({
             />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          {/* Two columns only once there is genuine room for them — at md the
+              sidebar is still taking width and the pairs came out cramped. */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-8 gap-y-7">
             <div className="flex flex-col gap-4">
               <h3 className="font-label-caps text-label-caps text-primary-fixed-dim flex items-center gap-2">
                 <Icon name="school" className="text-sm" /> Depth Level
@@ -337,9 +362,13 @@ export default function ConfigForm({
             </div>
           </div>
 
-          {error && <div className="text-sm text-error">{error}</div>}
+          {error && (
+            <div className="text-sm text-error bg-error-container/20 border border-error/30 rounded-xl p-3.5">
+              {error}
+            </div>
+          )}
 
-          <div className="mt-4 flex flex-col sm:flex-row gap-4 justify-end items-center">
+          <div className="mt-2 flex flex-col sm:flex-row gap-4 justify-end items-center">
             <button
               onClick={() => topic.trim() && onLearningPath({ topic: topic.trim(), profile: buildProfile() })}
               disabled={!topic.trim()}

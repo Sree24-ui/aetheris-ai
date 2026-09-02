@@ -1,13 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { LessonPlan, LessonSection, EvalResult, TranscriptMessage, VisualType } from "@/lib/types";
 import { useSpeech } from "@/hooks/useSpeech";
 import Avatar from "./Avatar";
 import SlideRenderer from "./SlideRenderer";
 import VideoRecorder from "./VideoRecorder";
+import VoiceSettings from "./VoiceSettings";
 import Icon from "./Icon";
 import { LANGUAGES } from "@/lib/languages";
+import { mapWithConcurrency } from "@/lib/concurrency";
+import {
+  getVoicePrefsServerSnapshot,
+  getVoicePrefsSnapshot,
+  setVoicePrefs,
+  subscribeVoicePrefs,
+  type VoicePrefs,
+} from "@/lib/voicePrefs";
 
 const VISUAL_ICON: Record<VisualType, string> = {
   equation: "functions",
@@ -19,6 +28,12 @@ const VISUAL_ICON: Record<VisualType, string> = {
   none: "notes",
 };
 
+// Translating every remaining section at once trips Gemini's per-minute
+// request limit on the free tier, which is what turned a language switch into
+// a wall of "couldn't be translated" errors. Three at a time is still fast
+// without bursting.
+const TRANSLATE_CONCURRENCY = 3;
+
 interface Props {
   lessonPlan: LessonPlan;
   onComplete: (result: {
@@ -29,6 +44,7 @@ interface Props {
 }
 
 type Phase = "narrating" | "checkpoint" | "evaluating" | "remediation" | "done";
+type PanelTab = "lesson" | "chat";
 
 interface ChatMessage {
   id: string;
@@ -54,7 +70,30 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
   const [showCaptions, setShowCaptions] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
 
-  const { speak, stop, pause, resume, mouthOpen, state: speechState } = useSpeech();
+  // --- Feature: adjustable narration voice -------------------------------
+  // Backed by localStorage through an external store, so the server renders
+  // the defaults and React swaps in the saved preference after hydration.
+  const voicePrefs = useSyncExternalStore(
+    subscribeVoicePrefs,
+    getVoicePrefsSnapshot,
+    getVoicePrefsServerSnapshot
+  );
+  const updateVoicePrefs = useCallback((next: VoicePrefs) => setVoicePrefs(next), []);
+
+  // --- Feature: free-form chat with the teacher --------------------------
+  // Deliberately separate state from `messages` (the lesson transcript):
+  // questions the student asks must not be graded, must not appear in the
+  // report, and must stay available even while a checkpoint is open.
+  const [panelTab, setPanelTab] = useState<PanelTab>("lesson");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatPending, setChatPending] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [followUps, setFollowUps] = useState<string[]>([]);
+  const [unreadChat, setUnreadChat] = useState(0);
+
+  const { speak, stop, pause, resume, mouthOpen, state: speechState, voicesForLanguage } =
+    useSpeech(voicePrefs);
 
   const sectionsRef = useRef(sections);
   const languageRef = useRef(language);
@@ -63,8 +102,11 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
   const startedForRef = useRef<string | null>(null);
   const videoFrameRef = useRef<HTMLDivElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<ChatMessage[]>(messages);
+  const chatMessagesRef = useRef<ChatMessage[]>(chatMessages);
   messagesRef.current = messages;
+  chatMessagesRef.current = chatMessages;
   sectionsRef.current = sections;
   languageRef.current = language;
 
@@ -75,9 +117,29 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
     setMessages((prev) => [...prev, { id: `m${msgIdRef.current}`, role, text }]);
   }
 
+  // Clearing the badge here rather than in an effect keyed on `panelTab`:
+  // reacting to the tab change would be a setState triggered by render.
+  function openTab(tab: PanelTab) {
+    setPanelTab(tab);
+    if (tab === "chat") setUnreadChat(0);
+  }
+
+  function addChatMessage(role: ChatMessage["role"], text: string) {
+    msgIdRef.current += 1;
+    setChatMessages((prev) => [...prev, { id: `c${msgIdRef.current}`, role, text }]);
+  }
+
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
+    if (panelTab === "lesson") {
+      transcriptEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [messages, panelTab]);
+
+  useEffect(() => {
+    if (panelTab === "chat") {
+      chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [chatMessages, panelTab]);
 
   // Esc (or the browser's own fullscreen UI) exits fullscreen without going
   // through our button, which would otherwise leave the icon showing the
@@ -198,19 +260,55 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
         addMessage("ai", remediationText);
         await speak(remediationText, language);
       }
-    } catch {
+    } catch (err) {
       // Land back on "checkpoint" (not left stuck on "evaluating") so the
       // question + answer input reappear alongside this error, letting the
-      // student retry immediately instead of hitting a dead end.
+      // student retry immediately instead of hitting a dead end. The real
+      // reason (quota, timeout) now comes through from the route.
       setPhase("checkpoint");
       setEvalResult({
         correct: false,
         partialCredit: 0,
-        feedback: "Could not reach the AI teacher to check that answer — please try submitting again.",
+        feedback:
+          (err as Error).message ||
+          "Could not reach the AI teacher to check that answer — please try submitting again.",
         misconception: undefined,
       });
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleAskQuestion(text?: string) {
+    const question = (text ?? chatInput).trim();
+    if (!question || chatPending) return;
+    addChatMessage("user", question);
+    setChatInput("");
+    setFollowUps([]);
+    setChatError(null);
+    setChatPending(true);
+    try {
+      const res = await fetch("/api/lesson/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question,
+          lessonTopic: lessonPlan.topic,
+          sectionTitle: section?.title ?? "",
+          sectionContext: section?.narration ?? "",
+          language,
+          history: chatMessagesRef.current.slice(-6).map(({ role, text }) => ({ role, text })),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not reach the AI teacher.");
+      addChatMessage("ai", data.answer);
+      setFollowUps(Array.isArray(data.suggestedFollowUps) ? data.suggestedFollowUps : []);
+      if (panelTab !== "chat") setUnreadChat((n) => n + 1);
+    } catch (err) {
+      setChatError((err as Error).message);
+    } finally {
+      setChatPending(false);
     }
   }
 
@@ -221,29 +319,39 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
     setTranslateError(null);
     try {
       const updated = [...sectionsRef.current];
-      // Translated in parallel rather than one-at-a-time: a 10-section lesson
-      // used to serialize 10 LLM round-trips (well over a minute of dead air)
-      // before the learner could continue in the new language.
-      const pending = updated.slice(index).map((sec, offset) =>
-        fetch("/api/lesson/translate-section", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ section: sec, targetLanguage: newLang }),
-        })
-          .then(async (res) => (res.ok ? { i: index + offset, section: await res.json() } : null))
-          .catch(() => null)
-      );
-      const settled = await Promise.all(pending);
-      const failed = settled.filter((r) => r === null).length;
+      const remaining = updated.slice(index);
+      // Windowed rather than all-at-once: see TRANSLATE_CONCURRENCY above.
+      const settled = await mapWithConcurrency(remaining, TRANSLATE_CONCURRENCY, async (sec, offset) => {
+        try {
+          const res = await fetch("/api/lesson/translate-section", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ section: sec, targetLanguage: newLang }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            return { i: index + offset, section: null, error: data.error as string | undefined };
+          }
+          return { i: index + offset, section: await res.json(), error: undefined };
+        } catch {
+          return { i: index + offset, section: null, error: undefined };
+        }
+      });
+
+      const failures = settled.filter((r) => r.section === null);
       for (const r of settled) {
-        if (r) updated[r.i] = r.section;
+        if (r.section) updated[r.i] = r.section;
       }
       setSections(updated);
       setLanguage(newLang);
       setPlayToken((t) => t + 1);
-      if (failed > 0) {
+      if (failures.length > 0) {
+        // Surface the API's own explanation (quota, rate limit) rather than
+        // only a count, so the learner knows whether retrying will help.
+        const reason = failures.find((f) => f.error)?.error;
         setTranslateError(
-          `${failed} of ${settled.length} sections couldn't be translated and stayed in the original language.`
+          `${failures.length} of ${settled.length} sections stayed in the original language.` +
+            (reason ? ` ${reason}` : "")
         );
       }
     } finally {
@@ -287,8 +395,8 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
   const isAnswering = phase === "checkpoint" || phase === "evaluating";
 
   return (
-    <div className="flex flex-col lg:flex-row gap-element-gap px-container-padding lg:px-element-gap py-element-gap lg:max-h-screen lg:overflow-hidden">
-      <div className="flex-1 flex flex-col gap-element-gap min-w-0 lg:overflow-y-auto">
+    <div className="flex flex-col xl:flex-row gap-6 px-4 sm:px-6 lg:px-8 py-6 xl:h-[calc(100vh-var(--app-shell-offset,5rem))] xl:overflow-hidden">
+      <div className="flex-1 flex flex-col gap-5 min-w-0 xl:overflow-y-auto xl:pr-1">
         <div className="flex items-center gap-3 flex-wrap">
           <div className="flex-1 min-w-[200px]">
             <div className="glass-panel rounded-full h-3 w-full overflow-hidden">
@@ -301,11 +409,22 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
               Section {index + 1} of {sections.length} · {lessonPlan.subject}
             </div>
           </div>
+
+          <VoiceSettings
+            prefs={voicePrefs}
+            onChange={updateVoicePrefs}
+            voices={voicesForLanguage(language)}
+            onPreview={(text) => speak(text, language)}
+            onStopPreview={stop}
+            disabled={translating}
+          />
+
           <select
             className="text-xs rounded-full glass-bubble px-3 py-2 bg-transparent text-on-surface"
             value={language}
             onChange={(e) => handleLanguageChange(e.target.value)}
             disabled={translating}
+            aria-label="Teaching language"
           >
             {LANGUAGES.map((l) => (
               <option className="bg-surface-container-high" key={l} value={l}>{l}</option>
@@ -327,19 +446,19 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
             words. Flow layout makes overlap structurally impossible. */}
         <div
           ref={videoFrameRef}
-          className="glass-panel rounded-xl flex-1 relative overflow-hidden min-h-[320px] sm:min-h-[420px] flex flex-col items-center gap-4 p-6"
+          className="glass-panel rounded-2xl flex-1 relative overflow-hidden min-h-[340px] sm:min-h-[440px] flex flex-col items-center gap-4 p-6"
         >
           <div className="absolute inset-0 bg-gradient-to-br from-primary-container/10 via-transparent to-secondary-container/10" />
 
-          <div className="relative z-10 flex-1 min-h-0 w-full flex flex-col items-center justify-center gap-4">
+          <div className="relative z-10 flex-1 min-h-0 w-full flex flex-col items-center justify-center gap-5">
             <div className="flex-1 min-h-0 w-full flex items-center justify-center">
               <Avatar speaking={speechState === "speaking"} mouthOpen={mouthOpen} />
             </div>
 
             {showCaptions && (
               <div className="w-full flex justify-center px-2 min-h-0">
-                <div className="glass-panel px-5 py-3 rounded-xl max-w-lg max-h-28 overflow-y-auto text-center">
-                  <p className="font-body-md text-on-surface text-sm">
+                <div className="glass-panel px-6 py-4 rounded-2xl max-w-2xl max-h-32 overflow-y-auto text-center">
+                  <p className="font-body-md text-on-surface text-sm leading-relaxed">
                     {phase === "checkpoint" || phase === "evaluating"
                       ? section.checkpoint?.question
                       : section.narration}
@@ -352,12 +471,15 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
           <div className="relative shrink-0 flex gap-3 z-10">
             <button
               onClick={togglePlayPause}
+              aria-label={speechState === "speaking" ? "Pause narration" : "Play narration"}
               className="bg-surface-variant/80 p-3 rounded-full backdrop-blur-md hover:bg-primary-container/50 transition-colors text-primary"
             >
               <Icon name={speechState === "speaking" ? "pause" : "play_arrow"} />
             </button>
             <button
               onClick={() => setShowCaptions((c) => !c)}
+              aria-label={showCaptions ? "Hide captions" : "Show captions"}
+              aria-pressed={showCaptions}
               className={`p-3 rounded-full backdrop-blur-md transition-colors ${
                 showCaptions ? "bg-primary-container/50 text-primary" : "bg-surface-variant/80 text-primary"
               }`}
@@ -366,6 +488,7 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
             </button>
             <button
               onClick={toggleFullscreen}
+              aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
               className="bg-surface-variant/80 p-3 rounded-full backdrop-blur-md hover:bg-primary-container/50 transition-colors text-primary"
             >
               <Icon name={fullscreen ? "fullscreen_exit" : "fullscreen"} />
@@ -373,34 +496,34 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
           </div>
         </div>
 
-        <div className="glass-panel rounded-xl p-5 max-h-64 overflow-y-auto">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-headline-md text-[16px] text-on-surface flex items-center gap-2">
+        <div className="glass-panel rounded-2xl p-6 max-h-80 overflow-y-auto">
+          <div className="flex items-center justify-between mb-4 gap-3">
+            <h3 className="font-headline-md text-[17px] text-on-surface flex items-center gap-2">
               {section.title}
             </h3>
             {section.visual && section.visual.type !== "none" && (
-              <span className="flex items-center gap-1 text-xs text-on-surface-variant">
+              <span className="flex items-center gap-1 text-xs text-on-surface-variant whitespace-nowrap">
                 <Icon name={VISUAL_ICON[section.visual.type] ?? "notes"} className="text-[16px]" />
                 Visual aid
               </span>
             )}
           </div>
           {section.bulletPoints?.length > 0 && (
-            <ul className="list-disc list-inside text-sm space-y-1 text-on-surface-variant mb-4">
+            <ul className="list-disc list-inside text-sm space-y-1.5 text-on-surface-variant mb-5">
               {section.bulletPoints.map((b, i) => (
                 <li key={i}>{b}</li>
               ))}
             </ul>
           )}
           {section.visual && section.visual.type !== "none" && (
-            <div className="rounded-xl bg-surface-container-lowest/50 p-4">
+            <div className="rounded-xl bg-surface-container-lowest/50 p-5 overflow-x-auto">
               <SlideRenderer visual={section.visual} />
             </div>
           )}
           {phase === "narrating" && (
             <button
               onClick={handleSkipNarration}
-              className="mt-3 text-xs text-on-surface-variant hover:text-tertiary-fixed-dim underline"
+              className="mt-4 text-xs text-on-surface-variant hover:text-tertiary-fixed-dim underline"
             >
               Skip narration
             </button>
@@ -408,91 +531,208 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
         </div>
       </div>
 
-      <div className="w-full lg:w-96 shrink-0 glass-panel rounded-xl flex flex-col overflow-hidden lg:max-h-full">
-        <div className="p-4 border-b border-white/10 bg-surface-container-low/50 backdrop-blur-md">
-          <h2 className="font-headline-md text-headline-md text-primary flex items-center gap-2">
-            <Icon name="forum" />
-            Interactive Chat
-          </h2>
-        </div>
-        <div className="flex-1 p-4 overflow-y-auto flex flex-col gap-4 min-h-[240px] max-h-[50vh] lg:max-h-none">
-          {messages.map((m) => (
-            <div
-              key={m.id}
-              className={`rounded-xl p-bubble-padding max-w-[90%] whitespace-pre-line text-sm ${
-                m.role === "ai"
-                  ? "glass-panel rounded-tl-sm border-l-2 border-l-primary self-start text-on-surface"
-                  : "bg-secondary-container/20 rounded-tr-sm border border-secondary/20 self-end text-secondary-fixed"
+      <div className="w-full xl:w-[26rem] shrink-0 glass-panel rounded-2xl flex flex-col overflow-hidden xl:max-h-full">
+        <div
+          className="flex border-b border-white/10 bg-surface-container-low/50 backdrop-blur-md"
+          role="tablist"
+        >
+          {([
+            { id: "lesson" as const, label: "Lesson", icon: "school" },
+            { id: "chat" as const, label: "Ask teacher", icon: "forum" },
+          ]).map((t) => (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={panelTab === t.id}
+              onClick={() => openTab(t.id)}
+              className={`flex-1 px-4 py-3.5 text-sm font-medium flex items-center justify-center gap-2 transition-colors border-b-2 ${
+                panelTab === t.id
+                  ? "border-b-primary text-primary bg-white/5"
+                  : "border-b-transparent text-on-surface-variant hover:text-on-surface"
               }`}
             >
-              {m.text}
-            </div>
+              <Icon name={t.icon} className="text-[18px]" />
+              {t.label}
+              {t.id === "chat" && unreadChat > 0 && (
+                <span className="ml-0.5 min-w-5 h-5 px-1.5 rounded-full bg-primary text-on-primary text-[11px] font-semibold flex items-center justify-center">
+                  {unreadChat}
+                </span>
+              )}
+            </button>
           ))}
-          <div ref={transcriptEndRef} />
         </div>
 
-        <div className="p-4 bg-surface-container-low/50 backdrop-blur-md border-t border-white/10 flex flex-col gap-3">
-          {isAnswering && section.checkpoint?.type === "mcq" && section.checkpoint.options ? (
-            <div className="grid gap-2">
-              {section.checkpoint.options.map((opt) => (
-                <button
-                  key={opt}
-                  onClick={() => setAnswer(opt)}
-                  disabled={submitting}
-                  className={`text-left text-sm px-3 py-2 rounded-lg glass-bubble ${answer === opt ? "active" : ""}`}
+        {panelTab === "lesson" ? (
+          <>
+            <div className="flex-1 p-4 overflow-y-auto flex flex-col gap-4 min-h-[240px] max-h-[45vh] xl:max-h-none">
+              {messages.map((m) => (
+                <div
+                  key={m.id}
+                  className={`rounded-2xl p-bubble-padding max-w-[90%] whitespace-pre-line text-sm leading-relaxed ${
+                    m.role === "ai"
+                      ? "glass-panel rounded-tl-sm border-l-2 border-l-primary self-start text-on-surface"
+                      : "bg-secondary-container/20 rounded-tr-sm border border-secondary/20 self-end text-secondary-fixed"
+                  }`}
                 >
-                  {opt}
-                </button>
+                  {m.text}
+                </div>
               ))}
-              <button
-                onClick={handleSubmitAnswer}
-                disabled={!answer.trim() || submitting}
-                className="mt-1 px-4 py-2 rounded-full bg-primary-container text-on-primary-container text-sm font-medium disabled:opacity-40"
-              >
-                {submitting ? "Checking..." : "Submit answer"}
-              </button>
+              <div ref={transcriptEndRef} />
             </div>
-          ) : (
-            <div className="flex gap-2">
-              <input
-                className="flex-1 bg-surface-variant/50 border border-outline/30 rounded-full px-4 py-2 font-body-md text-sm text-on-surface focus:outline-none focus:border-primary/50 disabled:opacity-40"
-                placeholder={isAnswering ? "Type your answer..." : "Waiting for the next question..."}
-                value={answer}
-                disabled={!isAnswering || submitting}
-                onChange={(e) => setAnswer(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSubmitAnswer()}
-              />
-              <button
-                onClick={handleSubmitAnswer}
-                disabled={!isAnswering || !answer.trim() || submitting}
-                className="p-2 text-primary hover:text-tertiary-fixed-dim transition-colors disabled:opacity-30"
-              >
-                <Icon name="send" />
-              </button>
-            </div>
-          )}
 
-          {evalResult && (phase === "remediation" || phase === "checkpoint") && (
-            <div
-              className={`text-xs rounded-lg p-3 border ${
-                evalResult.correct ? "bg-secondary/10 border-secondary/30" : "bg-tertiary/10 border-tertiary/30"
-              }`}
-            >
-              <div className="font-medium mb-1">{evalResult.correct ? "✓ Correct" : "Let's fix this misconception"}</div>
-              {evalResult.misconception && (
-                <p className="text-on-surface-variant">Misconception: {evalResult.misconception}</p>
+            <div className="p-4 bg-surface-container-low/50 backdrop-blur-md border-t border-white/10 flex flex-col gap-3">
+              {isAnswering && section.checkpoint?.type === "mcq" && section.checkpoint.options ? (
+                <div className="grid gap-2">
+                  {section.checkpoint.options.map((opt) => (
+                    <button
+                      key={opt}
+                      onClick={() => setAnswer(opt)}
+                      disabled={submitting}
+                      className={`text-left text-sm px-3.5 py-2.5 rounded-xl glass-bubble ${answer === opt ? "active" : ""}`}
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                  <button
+                    onClick={handleSubmitAnswer}
+                    disabled={!answer.trim() || submitting}
+                    className="mt-1 px-4 py-2.5 rounded-full bg-primary-container text-on-primary-container text-sm font-medium disabled:opacity-40"
+                  >
+                    {submitting ? "Checking..." : "Submit answer"}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <input
+                    className="flex-1 bg-surface-variant/50 border border-outline/30 rounded-full px-4 py-2.5 font-body-md text-sm text-on-surface focus:outline-none focus:border-primary/50 disabled:opacity-40"
+                    placeholder={isAnswering ? "Type your answer..." : "Waiting for the next question..."}
+                    value={answer}
+                    disabled={!isAnswering || submitting}
+                    onChange={(e) => setAnswer(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSubmitAnswer()}
+                    aria-label="Your answer"
+                  />
+                  <button
+                    onClick={handleSubmitAnswer}
+                    disabled={!isAnswering || !answer.trim() || submitting}
+                    aria-label="Submit answer"
+                    className="p-2.5 text-primary hover:text-tertiary-fixed-dim transition-colors disabled:opacity-30"
+                  >
+                    <Icon name="send" />
+                  </button>
+                </div>
               )}
-              {phase === "remediation" && (
+
+              {/* When the lesson is not asking anything, point the learner at
+                  the chat tab instead of leaving a dead input as the only
+                  affordance on screen. */}
+              {!isAnswering && phase !== "done" && (
                 <button
-                  onClick={() => goNext()}
-                  className="mt-2 px-4 py-1.5 rounded-full bg-primary-container text-on-primary-container text-xs"
+                  onClick={() => openTab("chat")}
+                  className="text-xs text-on-surface-variant hover:text-primary underline self-start"
                 >
-                  Continue lesson
+                  Have a question? Ask the teacher →
                 </button>
               )}
+
+              {evalResult && (phase === "remediation" || phase === "checkpoint") && (
+                <div
+                  className={`text-xs rounded-xl p-3.5 border ${
+                    evalResult.correct ? "bg-secondary/10 border-secondary/30" : "bg-tertiary/10 border-tertiary/30"
+                  }`}
+                >
+                  <div className="font-medium mb-1">{evalResult.correct ? "✓ Correct" : "Let's fix this misconception"}</div>
+                  {evalResult.misconception && (
+                    <p className="text-on-surface-variant">Misconception: {evalResult.misconception}</p>
+                  )}
+                  {phase === "remediation" && (
+                    <button
+                      onClick={() => goNext()}
+                      className="mt-2 px-4 py-1.5 rounded-full bg-primary-container text-on-primary-container text-xs"
+                    >
+                      Continue lesson
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </>
+        ) : (
+          <>
+            <div className="flex-1 p-4 overflow-y-auto flex flex-col gap-4 min-h-[240px] max-h-[45vh] xl:max-h-none">
+              {chatMessages.length === 0 && !chatPending && (
+                <div className="m-auto text-center px-4 py-8 flex flex-col items-center gap-3">
+                  <Icon name="forum" className="text-4xl text-outline" />
+                  <p className="text-sm text-on-surface-variant max-w-[16rem]">
+                    Ask anything about this lesson — a definition, a step you missed, or a &ldquo;why
+                    does that work?&rdquo;. This is separate from your checkpoints and is never graded.
+                  </p>
+                </div>
+              )}
+              {chatMessages.map((m) => (
+                <div
+                  key={m.id}
+                  className={`rounded-2xl p-bubble-padding max-w-[90%] whitespace-pre-line text-sm leading-relaxed ${
+                    m.role === "ai"
+                      ? "glass-panel rounded-tl-sm border-l-2 border-l-tertiary self-start text-on-surface"
+                      : "bg-secondary-container/20 rounded-tr-sm border border-secondary/20 self-end text-secondary-fixed"
+                  }`}
+                >
+                  {m.text}
+                </div>
+              ))}
+              {chatPending && (
+                <div className="glass-panel rounded-2xl rounded-tl-sm border-l-2 border-l-tertiary self-start px-4 py-3 flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-tertiary animate-pulse" />
+                  <span className="text-xs text-on-surface-variant">Thinking...</span>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            <div className="p-4 bg-surface-container-low/50 backdrop-blur-md border-t border-white/10 flex flex-col gap-3">
+              {chatError && (
+                <div className="text-xs text-error bg-error-container/20 border border-error/30 rounded-lg p-2.5">
+                  {chatError}
+                </div>
+              )}
+
+              {followUps.length > 0 && !chatPending && (
+                <div className="flex flex-wrap gap-2">
+                  {followUps.map((f) => (
+                    <button
+                      key={f}
+                      onClick={() => handleAskQuestion(f)}
+                      className="text-xs px-3 py-1.5 rounded-full glass-bubble text-on-surface-variant hover:text-on-surface text-left"
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 bg-surface-variant/50 border border-outline/30 rounded-full px-4 py-2.5 font-body-md text-sm text-on-surface focus:outline-none focus:border-tertiary/50 disabled:opacity-40"
+                  placeholder="Ask the teacher anything..."
+                  value={chatInput}
+                  disabled={chatPending}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAskQuestion()}
+                  aria-label="Ask the teacher a question"
+                />
+                <button
+                  onClick={() => handleAskQuestion()}
+                  disabled={!chatInput.trim() || chatPending}
+                  aria-label="Send question"
+                  className="p-2.5 text-tertiary hover:text-tertiary-fixed-dim transition-colors disabled:opacity-30"
+                >
+                  <Icon name="send" />
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

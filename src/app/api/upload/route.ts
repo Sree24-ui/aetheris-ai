@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
+import { toErrorResponse } from "@/lib/llmError";
 import { parseDocument } from "@/lib/documentParser";
 import { ingestDocument } from "@/lib/vectorStore";
 import { extractConcepts } from "@/lib/teachingAgent";
@@ -28,7 +29,18 @@ export async function POST(req: NextRequest) {
 
     const docId = randomUUID();
     const { numChunks, preview, sample } = await ingestDocument(docId, file.name, text);
-    const concepts = await extractConcepts(sample);
+
+    // The document itself is already indexed and usable at this point, so a
+    // failed concept extraction must not fail the whole upload — but it does
+    // need to be reported, or an empty tag list looks like a broken upload.
+    let concepts: string[] = [];
+    let conceptsWarning: string | undefined;
+    try {
+      concepts = await extractConcepts(sample);
+    } catch (err) {
+      const { body } = toErrorResponse(err);
+      conceptsWarning = `Document indexed, but key concepts couldn't be extracted. ${body.error}`;
+    }
 
     const summary: DocumentSummary = {
       docId,
@@ -37,13 +49,18 @@ export async function POST(req: NextRequest) {
       language: "auto",
       preview,
       concepts,
+      conceptsWarning,
     };
     return NextResponse.json(summary);
   } catch (err) {
     console.error(err);
-    return NextResponse.json(
-      { error: (err as Error).message || "Failed to process document" },
-      { status: 500 }
-    );
+    // An unsupported extension is the caller's mistake, not a server fault —
+    // returning 400 lets the UI say so plainly instead of "something failed".
+    const message = err instanceof Error ? err.message : "";
+    if (/^Unsupported file type/.test(message)) {
+      return NextResponse.json({ error: message, kind: "unsupported" }, { status: 400 });
+    }
+    const { body, status } = toErrorResponse(err);
+    return NextResponse.json(body, { status });
   }
 }
