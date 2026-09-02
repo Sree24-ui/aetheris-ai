@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { pool } from "@/lib/db";
+import { MIN_PASSWORD_LENGTH } from "@/lib/appConfig";
 
 export const runtime = "nodejs";
 
@@ -14,9 +15,9 @@ export async function POST(req: NextRequest) {
     if (typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return NextResponse.json({ error: "A valid email is required." }, { status: 400 });
     }
-    if (typeof password !== "string" || password.length < 8) {
+    if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
       return NextResponse.json(
-        { error: "Password must be at least 8 characters." },
+        { error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` },
         { status: 400 }
       );
     }

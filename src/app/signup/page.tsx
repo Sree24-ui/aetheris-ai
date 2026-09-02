@@ -7,6 +7,7 @@ import { signIn } from "next-auth/react";
 import AuthLayout from "@/components/AuthLayout";
 import GoogleIcon from "@/components/GoogleIcon";
 import Icon from "@/components/Icon";
+import { MIN_PASSWORD_LENGTH } from "@/lib/appConfig";
 
 export default function SignUpPage() {
   const router = useRouter();
@@ -93,11 +94,11 @@ export default function SignUpPage() {
             <input
               type={showPassword ? "text" : "password"}
               required
-              minLength={8}
+              minLength={MIN_PASSWORD_LENGTH}
               autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="At least 8 characters"
+              placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
               className="flex-1 bg-transparent text-sm text-on-surface placeholder-outline-variant focus:outline-none"
             />
             <button
