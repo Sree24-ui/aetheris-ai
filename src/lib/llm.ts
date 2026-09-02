@@ -1,4 +1,12 @@
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+import { APP_NAME, APP_URL } from "./appConfig";
+
+const OPENROUTER_URL =
+  process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1/chat/completions";
+
+// How long to wait on any single model before failing over to the next one.
+const REQUEST_TIMEOUT_MS = Number(process.env.OPENROUTER_TIMEOUT_MS) || 22_000;
+// Pause before the single retry a 429 gets — rate limits usually clear fast.
+const RATE_LIMIT_RETRY_MS = 1000;
 
 const PRIMARY_MODEL = process.env.OPENROUTER_MODEL || "minimax/minimax-m3:free";
 const FALLBACK_MODELS = (process.env.OPENROUTER_FALLBACK_MODELS || "z-ai/glm-5.2:free,google/gemma-4-31b-it:free,openrouter/free")
@@ -12,7 +20,7 @@ function getApiKey(): string {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "OPENROUTER_API_KEY is not set. Add it to .env.local to enable the AI Teacher."
+      `OPENROUTER_API_KEY is not set. Add it to .env.local to enable ${APP_NAME}.`
     );
   }
   return apiKey;
@@ -52,13 +60,17 @@ async function chatCompletion(messages: ChatMessage[], maxTokens: number): Promi
   for (const model of MODEL_CHAIN) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 22_000);
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
       try {
         const res = await fetch(OPENROUTER_URL, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json",
+            // OpenRouter uses these for app attribution; requests that send
+            // them are less likely to be deprioritized on the free tier.
+            ...(APP_URL ? { "HTTP-Referer": APP_URL } : {}),
+            "X-Title": APP_NAME,
           },
           body: JSON.stringify({
             model,
@@ -72,7 +84,7 @@ async function chatCompletion(messages: ChatMessage[], maxTokens: number): Promi
           const body = await res.text();
           lastError = new Error(`Rate limited on ${model}: ${body.slice(0, 200)}`);
           if (attempt === 0) {
-            await sleep(1000);
+            await sleep(RATE_LIMIT_RETRY_MS);
             continue;
           }
           break;

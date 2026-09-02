@@ -15,6 +15,7 @@ export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [grading, setGrading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [gradingError, setGradingError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
@@ -27,7 +28,7 @@ export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
           body: JSON.stringify({ lessonPlan, language }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
+        if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
         if (!cancelled) {
           setQuestions(data);
           setError(null);
@@ -45,14 +46,18 @@ export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
   async function handleSubmit() {
     if (!questions) return;
     setGrading(true);
-    const results: { question: QuizQuestion; studentAnswer: string; correct: boolean }[] = [];
-    for (const q of questions) {
-      const studentAnswer = answers[q.id] || "";
-      if (q.type === "mcq") {
-        const correct =
-          studentAnswer.trim().toLowerCase() === (q.correctAnswer || "").trim().toLowerCase();
-        results.push({ question: q, studentAnswer, correct });
-      } else {
+    setGradingError(null);
+    // Short-answer questions each need their own LLM round-trip. Grading them
+    // in parallel keeps total wait at roughly one call instead of the sum of
+    // all of them (a 4-short-answer quiz went from ~40s to ~10s).
+    const results = await Promise.all(
+      questions.map(async (q) => {
+        const studentAnswer = answers[q.id] || "";
+        if (q.type === "mcq") {
+          const correct =
+            studentAnswer.trim().toLowerCase() === (q.correctAnswer || "").trim().toLowerCase();
+          return { question: q, studentAnswer, correct };
+        }
         try {
           const res = await fetch("/api/lesson/evaluate", {
             method: "POST",
@@ -64,15 +69,24 @@ export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
               language,
             }),
           });
+          // Without this check a 500 would parse as `{error: "..."}`, whose
+          // `correct` is undefined — silently marking the answer wrong.
+          if (!res.ok) return { question: q, studentAnswer, correct: false, graderFailed: true };
           const evalResult = await res.json();
-          results.push({ question: q, studentAnswer, correct: !!evalResult.correct });
+          return { question: q, studentAnswer, correct: !!evalResult.correct };
         } catch {
-          results.push({ question: q, studentAnswer, correct: false });
+          return { question: q, studentAnswer, correct: false, graderFailed: true };
         }
-      }
-    }
+      })
+    );
     setGrading(false);
-    onFinished(results);
+    if (results.some((r) => "graderFailed" in r && r.graderFailed)) {
+      // Kept separate from `error` (which swaps in the reload-the-quiz screen)
+      // so a transient grader hiccup doesn't discard everything they typed.
+      setGradingError("Some answers couldn't be graded — the AI grader was unreachable. Your answers are safe; try submitting again.");
+      return;
+    }
+    onFinished(results.map(({ question, studentAnswer, correct }) => ({ question, studentAnswer, correct })));
   }
 
   if (error)
@@ -141,6 +155,16 @@ export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
           )}
         </div>
       ))}
+      {gradingError && (
+        <div className="text-sm text-error bg-error-container/20 border border-error/30 rounded-xl p-3">
+          {gradingError}
+        </div>
+      )}
+      {!allAnswered && (
+        <p className="text-xs text-on-surface-variant text-center">
+          Answer all {questions.length} questions to submit.
+        </p>
+      )}
       <button
         onClick={handleSubmit}
         disabled={!allAnswered || grading}
