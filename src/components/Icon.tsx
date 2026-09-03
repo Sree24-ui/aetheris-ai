@@ -7,7 +7,7 @@ interface IconProps {
 export default function Icon({ name, className = "", filled = false }: IconProps) {
   return (
     <span
-      className={`material-symbols-outlined select-none ${className}`}
+      className={`icon select-none ${className}`}
       style={filled ? { fontVariationSettings: "'FILL' 1" } : undefined}
     >
       {name}

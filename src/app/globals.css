@@ -84,6 +84,29 @@
   --text-label-caps--font-weight: 600;
 }
 
+/* Google's icon stylesheet ships an *unlayered* `.material-symbols-outlined
+   { font-size: 24px }`, and its <link> loads after Next's CSS — so it beat
+   every layered `text-*` utility and silently pinned every icon in the app to
+   24px. We keep their <link> for the @font-face and apply the glyph styling
+   ourselves under `.icon`, inside @layer base, where utilities outrank it. */
+@layer base {
+  .icon {
+    font-family: "Material Symbols Outlined", sans-serif;
+    font-weight: normal;
+    font-style: normal;
+    font-size: 24px;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    font-feature-settings: "liga";
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
 body {
   background-color: var(--color-background);
   color: var(--color-on-background);
@@ -309,3 +332,38 @@ a[href]:active,
   --tw-prose-td-borders: var(--color-outline-variant);
 }
 .katex { color: var(--color-on-surface); }
+
+/* --- UI trial (ui-trial branch): glass nav + floating bubble field --- */
+.glass-nav {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  background: linear-gradient(to bottom, rgba(21, 32, 49, 0.8), rgba(21, 32, 49, 0));
+}
+
+.bubble-bg {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(40px);
+  animation: float-up 15s infinite linear;
+}
+@keyframes float-up {
+  0% { transform: translateY(100vh) scale(0.8); opacity: 0; }
+  20%, 80% { opacity: 0.15; }
+  100% { transform: translateY(-20vh) scale(1.2); opacity: 0; }
+}
+.bubble-1 { width: 300px; height: 300px; background: rgba(208, 188, 255, 0.2); left: 10%; animation-duration: 25s; }
+.bubble-2 { width: 400px; height: 400px; background: rgba(0, 162, 230, 0.15); right: 5%; animation-duration: 30s; animation-delay: 5s; }
+.bubble-3 { width: 250px; height: 250px; background: rgba(236, 106, 6, 0.1); left: 40%; animation-duration: 20s; animation-delay: 12s; }
+.bubble-4 { width: 350px; height: 350px; background: rgba(137, 206, 255, 0.15); right: 30%; animation-duration: 28s; animation-delay: 18s; }
+
+.grid-overlay {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bubble-bg { animation: none; opacity: 0.15; }
+}

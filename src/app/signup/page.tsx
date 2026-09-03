@@ -50,15 +50,15 @@ export default function SignUpPage() {
   }
 
   return (
-    <AuthLayout tagline="Create an account to save your lessons, history, and learning progress.">
-      <h1 className="font-display-lg-mobile text-[32px] text-on-surface mb-2">Create your account</h1>
-      <p className="text-sm text-on-surface-variant mb-8">Start learning in a couple of minutes.</p>
+    <AuthLayout>
+      <h1 className="font-display-lg-mobile text-[32px] text-on-surface mb-2 text-center">Create your account</h1>
+      <p className="text-sm text-on-surface-variant mb-8 text-center">Start learning in a couple of minutes.</p>
 
       <form onSubmit={handleSubmit} className="space-y-5">
         <div>
-          <label className="text-sm font-medium text-on-surface block mb-1.5">Full name</label>
-          <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-surface-container/50 px-4 py-3 focus-within:border-primary/40">
-            <Icon name="person" className="text-[18px] text-outline" />
+          <label className="font-label-caps text-label-caps text-on-surface-variant block uppercase tracking-wider ml-4 mb-2">Full name</label>
+          <div className="flex items-center gap-3 rounded-full border border-white/8 bg-surface-container-low/70 backdrop-blur-md px-5 py-4 transition-colors focus-within:border-primary/40">
+            <Icon name="person" className="text-[20px] text-primary" />
             <input
               type="text"
               required
@@ -66,15 +66,15 @@ export default function SignUpPage() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Ada Lovelace"
-              className="flex-1 bg-transparent text-sm text-on-surface placeholder-outline-variant focus:outline-none"
+              className="flex-1 bg-transparent font-body-md text-body-md text-on-surface placeholder-on-surface-variant/50 focus:outline-none"
             />
           </div>
         </div>
 
         <div>
-          <label className="text-sm font-medium text-on-surface block mb-1.5">Email address</label>
-          <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-surface-container/50 px-4 py-3 focus-within:border-primary/40">
-            <Icon name="mail" className="text-[18px] text-outline" />
+          <label className="font-label-caps text-label-caps text-on-surface-variant block uppercase tracking-wider ml-4 mb-2">Email address</label>
+          <div className="flex items-center gap-3 rounded-full border border-white/8 bg-surface-container-low/70 backdrop-blur-md px-5 py-4 transition-colors focus-within:border-primary/40">
+            <Icon name="mail" className="text-[20px] text-primary" />
             <input
               type="email"
               required
@@ -82,15 +82,15 @@ export default function SignUpPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
-              className="flex-1 bg-transparent text-sm text-on-surface placeholder-outline-variant focus:outline-none"
+              className="flex-1 bg-transparent font-body-md text-body-md text-on-surface placeholder-on-surface-variant/50 focus:outline-none"
             />
           </div>
         </div>
 
         <div>
-          <label className="text-sm font-medium text-on-surface block mb-1.5">Password</label>
-          <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-surface-container/50 px-4 py-3 focus-within:border-primary/40">
-            <Icon name="lock" className="text-[18px] text-outline" />
+          <label className="font-label-caps text-label-caps text-on-surface-variant block uppercase tracking-wider ml-4 mb-2">Password</label>
+          <div className="flex items-center gap-3 rounded-full border border-white/8 bg-surface-container-low/70 backdrop-blur-md px-5 py-4 transition-colors focus-within:border-primary/40">
+            <Icon name="lock" className="text-[20px] text-primary" />
             <input
               type={showPassword ? "text" : "password"}
               required
@@ -99,7 +99,7 @@ export default function SignUpPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
-              className="flex-1 bg-transparent text-sm text-on-surface placeholder-outline-variant focus:outline-none"
+              className="flex-1 bg-transparent font-body-md text-body-md text-on-surface placeholder-on-surface-variant/50 focus:outline-none"
             />
             <button
               type="button"
@@ -120,11 +120,11 @@ export default function SignUpPage() {
         <button
           type="submit"
           disabled={submitting}
-          className="btn-sheen w-full py-3.5 rounded-full bg-primary-container text-on-primary-container font-semibold flex items-center justify-center gap-2 relative overflow-hidden disabled:opacity-60 shadow-[0_0_20px_rgba(160,120,255,0.25)]"
+          className="btn-sheen w-full mt-2 py-4 rounded-full bg-tertiary text-on-tertiary font-body-lg text-body-lg font-medium flex items-center justify-center gap-2 relative overflow-hidden disabled:opacity-60 shadow-[0_4px_14px_0_rgba(236,106,6,0.3)] hover:shadow-[0_6px_20px_0_rgba(236,106,6,0.5)] hover:-translate-y-0.5 transition-all duration-300"
         >
           {submitting ? (
             <>
-              <span className="w-4 h-4 rounded-full border-2 border-on-primary-container/40 border-t-on-primary-container animate-spin" />
+              <span className="w-4 h-4 rounded-full border-2 border-on-tertiary/40 border-t-on-tertiary animate-spin" />
               Creating account...
             </>
           ) : (
@@ -137,9 +137,9 @@ export default function SignUpPage() {
       </form>
 
       <div className="flex items-center gap-3 my-6">
-        <div className="flex-1 h-px bg-white/10" />
-        <span className="text-xs text-outline">OR</span>
-        <div className="flex-1 h-px bg-white/10" />
+        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-on-surface-variant/20 to-transparent" />
+        <span className="font-label-caps text-label-caps text-on-surface-variant uppercase">Or</span>
+        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-on-surface-variant/20 to-transparent" />
       </div>
 
       <button
@@ -148,7 +148,7 @@ export default function SignUpPage() {
           signIn("google", { callbackUrl: "/app" });
         }}
         disabled={googleLoading}
-        className="w-full py-3.5 rounded-full border border-white/15 text-on-surface font-medium flex items-center justify-center gap-3 hover:bg-white/5 transition-colors disabled:opacity-60"
+        className="w-full py-4 rounded-full bg-surface/30 backdrop-blur-md border border-white/5 text-on-surface font-medium flex items-center justify-center gap-3 hover:bg-surface/50 hover:border-primary/30 transition-all duration-300 disabled:opacity-60"
       >
         {googleLoading ? (
           <span className="w-4 h-4 rounded-full border-2 border-on-surface/30 border-t-on-surface animate-spin" />
@@ -160,7 +160,7 @@ export default function SignUpPage() {
 
       <p className="text-center text-sm text-on-surface-variant mt-8">
         Already have an account?{" "}
-        <Link href="/signin" className="text-primary-fixed-dim font-medium hover:underline">
+        <Link href="/signin" className="text-primary font-medium hover:text-primary-fixed hover:underline transition-colors">
           Log In
         </Link>
       </p>
