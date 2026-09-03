@@ -1,4 +1,5 @@
 import type { FeatureExtractionPipeline } from "@xenova/transformers";
+import { EMBED_BATCH_SIZE } from "./appConfig";
 
 let pipelinePromise: Promise<FeatureExtractionPipeline> | null = null;
 
@@ -17,7 +18,6 @@ async function getPipeline(): Promise<FeatureExtractionPipeline> {
 // Chunks are fed to the model in batches rather than one call per chunk.
 // A 60-chunk PDF used to mean 60 sequential inference calls on upload; the
 // batched form lets the runtime vectorize across the batch instead.
-const EMBED_BATCH_SIZE = 16;
 
 export async function embedTexts(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];

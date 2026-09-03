@@ -1,8 +1,9 @@
 import { pool } from "./db";
+import { HISTORY_PAGE_SIZE } from "./appConfig";
 import type { LearnerMemory, LearnerHistoryEntry, LearningPath } from "./types";
 
 // How many most-recent lessons to load for a learner's dashboard/history view.
-const HISTORY_PAGE_SIZE = 50;
+
 
 interface HistoryRow {
   id: string;

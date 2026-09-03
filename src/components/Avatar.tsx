@@ -1,4 +1,5 @@
 "use client";
+import { BLINK_DURATION_MS } from "@/lib/appConfig";
 
 import { useEffect, useState } from "react";
 
@@ -17,7 +18,7 @@ export default function Avatar({ speaking, mouthOpen }: AvatarProps) {
       const t = setTimeout(() => {
         if (cancelled) return;
         setBlink(true);
-        setTimeout(() => !cancelled && setBlink(false), 140);
+        setTimeout(() => !cancelled && setBlink(false), BLINK_DURATION_MS);
         cycle();
       }, delay);
       return t;

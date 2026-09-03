@@ -4,6 +4,7 @@ import { useState } from "react";
 import Icon from "./Icon";
 import type { LearnerProfile, DocumentSummary } from "@/lib/types";
 import { LANGUAGES } from "@/lib/languages";
+import { DOCUMENT_ACCEPT_ATTRIBUTE } from "@/lib/appConfig";
 
 const LEVELS: { value: LearnerProfile["level"]; label: string; icon: string }[] = [
   { value: "beginner", label: "Beginner", icon: "filter_1" },
@@ -96,7 +97,7 @@ export default function ConfigForm({
   async function handleUploadClick() {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".pdf,.docx,.pptx,.txt,.md";
+    input.accept = DOCUMENT_ACCEPT_ATTRIBUTE;
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;

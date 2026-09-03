@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
 import { toErrorResponse } from "@/lib/llmError";
 import { planLesson } from "@/lib/teachingAgent";
 import { searchDocument, documentExists } from "@/lib/vectorStore";
 import type { LearnerProfile } from "@/lib/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+// Kept under the 60s ceiling that Vercel's Hobby tier enforces: a higher
+// value is not honoured there, and the platform kills the function before
+// this route's own timeout fires, leaving nothing useful in the logs.
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
@@ -24,11 +28,22 @@ export async function POST(req: NextRequest) {
     let isDocumentGrounded = false;
 
     if (docId) {
-      const exists = await documentExists(docId);
+      // Documents are owned, so the lookup is scoped to the signed-in user.
+      // Without this, a valid docId from anyone's upload would ground anyone
+      // else's lesson.
+      const session = await auth();
+      const userId = Number(session?.user?.id);
+      if (!Number.isFinite(userId)) {
+        return NextResponse.json(
+          { error: "You need to be signed in to use uploaded material.", kind: "auth" },
+          { status: 401 }
+        );
+      }
+      const exists = await documentExists(docId, userId);
       if (!exists) {
         return NextResponse.json({ error: "Document not found" }, { status: 404 });
       }
-      const results = await searchDocument(docId, topic, 10);
+      const results = await searchDocument(docId, userId, topic);
       groundedContext = results.map((r, i) => `[Excerpt ${i + 1}]\n${r.text}`).join("\n\n");
       isDocumentGrounded = true;
     }

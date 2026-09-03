@@ -1,4 +1,5 @@
 import mammoth from "mammoth";
+import { SUPPORTED_DOCUMENT_EXTENSIONS, type SupportedDocumentExtension } from "./appConfig";
 import JSZip from "jszip";
 import { parseStringPromise } from "xml2js";
 
@@ -58,7 +59,12 @@ async function parsePptx(buffer: Buffer): Promise<string> {
 
 export async function parseDocument(filename: string, buffer: Buffer): Promise<string> {
   const ext = filename.toLowerCase().split(".").pop() ?? "";
-  switch (ext) {
+  // Gate on the shared list first so the picker's accepted formats and the
+  // formats this function implements can never disagree.
+  if (!(SUPPORTED_DOCUMENT_EXTENSIONS as readonly string[]).includes(ext)) {
+    throw new Error(`Unsupported file type: .${ext}`);
+  }
+  switch (ext as SupportedDocumentExtension) {
     case "pdf":
       return parsePdf(buffer);
     case "docx":

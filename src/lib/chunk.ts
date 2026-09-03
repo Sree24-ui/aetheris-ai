@@ -1,10 +1,12 @@
+import { CHUNK_MAX_CHARS, CHUNK_MIN_CHARS, CHUNK_OVERLAP } from "./appConfig";
+
 export interface Chunk {
   id: string;
   text: string;
   index: number;
 }
 
-export function chunkText(text: string, maxChars = 900, overlap = 150): Chunk[] {
+export function chunkText(text: string, maxChars = CHUNK_MAX_CHARS, overlap = CHUNK_OVERLAP): Chunk[] {
   const cleaned = text.replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
   const paragraphs = cleaned.split(/\n{2,}/).filter((p) => p.trim().length > 0);
 
@@ -38,5 +40,5 @@ export function chunkText(text: string, maxChars = 900, overlap = 150): Chunk[] 
   }
   flush();
 
-  return chunks.filter((c) => c.text.length > 20);
+  return chunks.filter((c) => c.text.length > CHUNK_MIN_CHARS);
 }

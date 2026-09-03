@@ -2,6 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_VOICE_PREFS, type VoicePrefs } from "@/lib/voicePrefs";
+import {
+  MOUTH_FLAP_MS,
+  SPEECH_MS_PER_CHAR,
+  SPEECH_RESUME_WATCHDOG_MS,
+  SPEECH_WATCHDOG_MAX_MS,
+  SPEECH_WATCHDOG_MIN_MS,
+} from "@/lib/appConfig";
 
 const LANGUAGE_TO_BCP47: Record<string, string> = {
   english: "en-US",
@@ -140,8 +147,8 @@ export function useSpeech(prefs: VoicePrefs = DEFAULT_VOICE_PREFS) {
         // Scaled by rate: at 0.5x the same sentence takes twice as long, and a
         // watchdog that ignored that would cut slow narration off mid-word.
         const estimatedMs = Math.min(
-          60_000,
-          Math.max(4000, (text.length * 90) / Math.max(0.5, rate))
+          SPEECH_WATCHDOG_MAX_MS,
+          Math.max(SPEECH_WATCHDOG_MIN_MS, (text.length * SPEECH_MS_PER_CHAR) / Math.max(0.5, rate))
         );
         watchdogRef.current = setTimeout(finish, estimatedMs);
 
@@ -149,7 +156,7 @@ export function useSpeech(prefs: VoicePrefs = DEFAULT_VOICE_PREFS) {
           setState("speaking");
           mouthTimerRef.current = setInterval(() => {
             setMouthOpen((m) => !m);
-          }, 130);
+          }, MOUTH_FLAP_MS);
         };
         utterance.onend = finish;
         utterance.onerror = finish;
@@ -176,13 +183,13 @@ export function useSpeech(prefs: VoicePrefs = DEFAULT_VOICE_PREFS) {
     window.speechSynthesis.resume();
     mouthTimerRef.current = setInterval(() => {
       setMouthOpen((m) => !m);
-    }, 130);
+    }, MOUTH_FLAP_MS);
     setState("speaking");
     // The original watchdog may have already elapsed while paused; give the
     // resumed speech a fresh, generous safety window rather than none at all.
     if (watchdogRef.current) clearTimeout(watchdogRef.current);
     if (finishRef.current) {
-      watchdogRef.current = setTimeout(finishRef.current, 20_000);
+      watchdogRef.current = setTimeout(finishRef.current, SPEECH_RESUME_WATCHDOG_MS);
     }
   }, [state]);
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { MAX_FOLLOW_UPS } from "@/lib/appConfig";
 import { toErrorResponse } from "@/lib/llmError";
 import { answerQuestion } from "@/lib/teachingAgent";
 
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       answer: result.answer,
       suggestedFollowUps: Array.isArray(result.suggestedFollowUps)
-        ? result.suggestedFollowUps.slice(0, 2)
+        ? result.suggestedFollowUps.slice(0, MAX_FOLLOW_UPS)
         : [],
     });
   } catch (err) {

@@ -87,3 +87,36 @@ CREATE TABLE IF NOT EXISTS learner_learning_path
   current_step_index INTEGER NOT NULL DEFAULT 0,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Uploaded source material. Previously these lived as JSON files on disk,
+-- which on serverless meant os.tmpdir(): per-instance and ephemeral, so an
+-- upload handled by one instance was invisible to the instance that later
+-- planned the lesson. Storing them here makes retrieval durable and shared,
+-- and scoping by user_id stops one learner reading another's document by
+-- guessing a UUID.
+CREATE TABLE IF NOT EXISTS documents
+(
+  id UUID PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  filename TEXT NOT NULL,
+  num_chunks INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS documents_user_id_idx ON documents(user_id);
+
+-- Embeddings are stored as JSONB rather than a pgvector column so the schema
+-- applies on any Postgres without an extension step. Similarity is computed
+-- in Node over one document's chunks, which is a few hundred rows at most.
+-- Moving to pgvector is a drop-in optimisation once corpora get large.
+CREATE TABLE IF NOT EXISTS document_chunks
+(
+  document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  chunk_id TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  embedding JSONB NOT NULL,
+  PRIMARY KEY (document_id, chunk_id)
+);
+
+CREATE INDEX IF NOT EXISTS document_chunks_document_id_idx ON document_chunks(document_id);

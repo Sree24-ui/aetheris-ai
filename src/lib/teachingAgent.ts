@@ -1,4 +1,5 @@
 import { callModelJSON } from "./llm";
+import { CHAT_HISTORY_TURNS, MAX_CONCEPT_TAGS, TOKEN_BUDGET } from "./appConfig";
 import type {
   LearnerProfile,
   LessonPlan,
@@ -41,8 +42,8 @@ export async function extractConcepts(sampleText: string): Promise<string[]> {
   // quota-blocked extraction indistinguishable from a document that genuinely
   // has no concepts, so the panel just looked broken. The caller decides how
   // to degrade.
-  const result = await callModelJSON<{ concepts: string[] }>(system, user, 300);
-  return Array.isArray(result.concepts) ? result.concepts.slice(0, 6) : [];
+  const result = await callModelJSON<{ concepts: string[] }>(system, user, TOKEN_BUDGET.concepts);
+  return Array.isArray(result.concepts) ? result.concepts.slice(0, MAX_CONCEPT_TAGS) : [];
 }
 
 export async function parseInstruction(freeText: string): Promise<{
@@ -65,7 +66,7 @@ Return JSON with any fields you can confidently infer (omit fields you cannot in
   "objective": string | omit,
   "style": string | omit
 }`;
-  return callModelJSON(system, user, 512);
+  return callModelJSON(system, user, TOKEN_BUDGET.instruction);
 }
 
 /**
@@ -99,7 +100,7 @@ Respond in ${language}. ${JSON_ONLY}`;
   // Only the tail of the conversation is sent: enough for pronouns and
   // follow-ups to resolve, without growing the prompt (and the bill) as the
   // lesson goes on.
-  const recent = history.slice(-6).map((m) => `${m.role === "ai" ? "Teacher" : "Student"}: ${m.text}`);
+  const recent = history.slice(-CHAT_HISTORY_TURNS).map((m) => `${m.role === "ai" ? "Teacher" : "Student"}: ${m.text}`);
 
   const user = `Lesson topic: ${lessonTopic}
 Current section: ${sectionTitle}
@@ -114,7 +115,7 @@ Return JSON:
   "suggestedFollowUps": string[]    // 0-2 short follow-up questions the student might ask next, in ${language}
 }`;
 
-  return callModelJSON<{ answer: string; suggestedFollowUps: string[] }>(system, user, 1024);
+  return callModelJSON<{ answer: string; suggestedFollowUps: string[] }>(system, user, TOKEN_BUDGET.chat);
 }
 
 export async function planLesson(params: {
@@ -175,7 +176,7 @@ Return JSON exactly matching this TypeScript type:
   "sourceGrounded": ${isDocumentGrounded}
 }`;
 
-  return callModelJSON<LessonPlan>(system, user, 8192);
+  return callModelJSON<LessonPlan>(system, user, TOKEN_BUDGET.lessonPlan);
 }
 
 export async function evaluateAnswer(params: {
@@ -208,7 +209,7 @@ Return JSON:
   "remediation": { "reExplanation": string, "analogy": string|null, "extraExample": string|null } | null
 }`;
 
-  return callModelJSON<EvalResult>(system, user, 1536);
+  return callModelJSON<EvalResult>(system, user, TOKEN_BUDGET.evaluation);
 }
 
 export async function generateQuiz(params: {
@@ -229,7 +230,7 @@ Generate 4-6 quiz questions. Return JSON array:
   // 4-6 questions with options is verbose JSON; too tight a budget here
   // truncates the response mid-array and fails to parse (observed on the
   // free-tier model chain), so give it real headroom.
-  return callModelJSON<QuizQuestion[]>(system, user, 4096);
+  return callModelJSON<QuizQuestion[]>(system, user, TOKEN_BUDGET.quiz);
 }
 
 export async function generateReport(params: {
@@ -262,7 +263,7 @@ Return JSON:
   "suggestedNextTopic": string
 }`;
 
-  return callModelJSON<LearningReport>(system, user, 1024);
+  return callModelJSON<LearningReport>(system, user, TOKEN_BUDGET.report);
 }
 
 export async function translateSection(params: {
@@ -276,7 +277,7 @@ ${JSON.stringify(section)}
 
 Return the SAME JSON shape, fully in ${targetLanguage} for narration, bulletPoints, example, and checkpoint question/options. Keep ids, type fields, estimatedSeconds, conceptTags, and visual.type unchanged.`;
 
-  return callModelJSON<LessonSection>(system, user, 2048);
+  return callModelJSON<LessonSection>(system, user, TOKEN_BUDGET.translation);
 }
 
 export async function generateLearningPath(params: {
@@ -295,5 +296,5 @@ Return JSON:
 }
 Produce 5-10 steps.`;
 
-  return callModelJSON<LearningPath>(system, user, 2048);
+  return callModelJSON<LearningPath>(system, user, TOKEN_BUDGET.learningPath);
 }

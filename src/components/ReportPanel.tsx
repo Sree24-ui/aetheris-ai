@@ -1,4 +1,5 @@
 "use client";
+import { CONFETTI_DURATION_MS } from "@/lib/appConfig";
 
 import { useEffect, useState } from "react";
 import type { LearningReport } from "@/lib/types";
@@ -38,7 +39,7 @@ export default function ReportPanel({ report, onRestart, onNextTopic }: Props) {
 
   useEffect(() => {
     if (confetti.length === 0) return;
-    const timer = setTimeout(() => setConfetti([]), 5000);
+    const timer = setTimeout(() => setConfetti([]), CONFETTI_DURATION_MS);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

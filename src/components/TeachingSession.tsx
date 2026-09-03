@@ -10,6 +10,7 @@ import VoiceSettings from "./VoiceSettings";
 import Icon from "./Icon";
 import { LANGUAGES } from "@/lib/languages";
 import { mapWithConcurrency } from "@/lib/concurrency";
+import { TRANSLATE_CONCURRENCY } from "@/lib/appConfig";
 import {
   getVoicePrefsServerSnapshot,
   getVoicePrefsSnapshot,
@@ -27,12 +28,6 @@ const VISUAL_ICON: Record<VisualType, string> = {
   markdown: "notes",
   none: "notes",
 };
-
-// Translating every remaining section at once trips Gemini's per-minute
-// request limit on the free tier, which is what turned a language switch into
-// a wall of "couldn't be translated" errors. Three at a time is still fast
-// without bursting.
-const TRANSLATE_CONCURRENCY = 3;
 
 interface Props {
   lessonPlan: LessonPlan;

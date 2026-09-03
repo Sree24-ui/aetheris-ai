@@ -8,6 +8,8 @@
  * apart, so failures carry a `kind` plus a sentence fit to show a learner
  * instead of a raw JSON blob.
  */
+import { RATE_LIMIT_FALLBACK_MS, SERVER_ERROR_FALLBACK_MS } from "./appConfig";
+
 export type LlmErrorKind =
   | "quota"      // billing//quota exhausted — retrying will not help
   | "rateLimit"  // too many requests per minute — retrying will help
@@ -103,7 +105,7 @@ export function classifyGoogleError(status: number, raw: string): LlmError {
         userMessage:
           "Too many requests in a short window. Waiting a few seconds and trying again usually clears this.",
         retryable: true,
-        retryAfterMs: retryAfterMs ?? 5000,
+        retryAfterMs: retryAfterMs ?? RATE_LIMIT_FALLBACK_MS,
         httpStatus: 429,
       });
     }
@@ -159,7 +161,7 @@ export function classifyGoogleError(status: number, raw: string): LlmError {
       message: `Gemini server error (${status})${detail}`,
       userMessage: "Google's API is having trouble right now. Try again in a moment.",
       retryable: true,
-      retryAfterMs: retryAfterMs ?? 2000,
+      retryAfterMs: retryAfterMs ?? SERVER_ERROR_FALLBACK_MS,
       httpStatus: 503,
     });
   }
@@ -167,6 +169,101 @@ export function classifyGoogleError(status: number, raw: string): LlmError {
   return new LlmError({
     kind: "unknown",
     message: `Gemini request failed (${status}${apiStatus ? ` ${apiStatus}` : ""})${detail}`,
+    userMessage: apiMessage
+      ? `The AI service rejected the request: ${apiMessage}`
+      : "The AI service rejected the request.",
+    retryable: false,
+    httpStatus: 502,
+  });
+}
+
+interface OpenAIErrorBody {
+  error?: { message?: string; type?: string; code?: string };
+}
+
+/**
+ * Classifies a failure from an OpenAI-compatible backend (Groq).
+ *
+ * The shape differs from Google's: one `error.message`, no RetryInfo details,
+ * and the wait time arrives in the standard `Retry-After` header instead.
+ */
+export function classifyOpenAIError(
+  status: number,
+  raw: string,
+  retryAfterHeader?: string | null
+): LlmError {
+  let body: OpenAIErrorBody = {};
+  try {
+    body = JSON.parse(raw) as OpenAIErrorBody;
+  } catch {
+    // Fall through to status-based classification.
+  }
+  const apiMessage = body.error?.message?.trim();
+  const detail = apiMessage ? `: ${apiMessage}` : raw ? `: ${raw.slice(0, 200)}` : "";
+  const retrySeconds = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+  const retryAfterMs = Number.isFinite(retrySeconds) ? retrySeconds * 1000 : undefined;
+
+  if (status === 429) {
+    // Groq separates a per-minute throttle (worth waiting out) from a spent
+    // daily allowance (not). The message text is the only signal.
+    const isDailyCap = !!apiMessage && /per day|daily|quota/i.test(apiMessage);
+    if (isDailyCap) {
+      return new LlmError({
+        kind: "quota",
+        message: `Groq daily quota exhausted (429)${detail}`,
+        userMessage:
+          "The daily request allowance for this API key is used up. It resets on a 24-hour cycle, or you can raise the limit on your account.",
+        retryable: false,
+        retryAfterMs,
+        httpStatus: 429,
+      });
+    }
+    return new LlmError({
+      kind: "rateLimit",
+      message: `Groq rate limited (429)${detail}`,
+      userMessage:
+        "Too many requests in a short window. Waiting a few seconds and trying again usually clears this.",
+      retryable: true,
+      retryAfterMs: retryAfterMs ?? RATE_LIMIT_FALLBACK_MS,
+      httpStatus: 429,
+    });
+  }
+
+  if (status === 401 || status === 403) {
+    return new LlmError({
+      kind: "auth",
+      message: `Groq rejected the API key (${status})${detail}`,
+      userMessage: "The Groq API key was rejected. Check GROQ_API_KEY in .env.local.",
+      retryable: false,
+      httpStatus: 401,
+    });
+  }
+
+  if (status === 404) {
+    return new LlmError({
+      kind: "model",
+      message: `Groq model unavailable (404)${detail}`,
+      userMessage:
+        "The configured Groq model is not available to this key. Set GROQ_MODEL in .env.local to a model your account can use.",
+      retryable: false,
+      httpStatus: 404,
+    });
+  }
+
+  if (status >= 500 || status === 503) {
+    return new LlmError({
+      kind: "unknown",
+      message: `Groq server error (${status})${detail}`,
+      userMessage: "The AI service is having trouble right now. Try again in a moment.",
+      retryable: true,
+      retryAfterMs: retryAfterMs ?? SERVER_ERROR_FALLBACK_MS,
+      httpStatus: 503,
+    });
+  }
+
+  return new LlmError({
+    kind: "unknown",
+    message: `Groq request failed (${status})${detail}`,
     userMessage: apiMessage
       ? `The AI service rejected the request: ${apiMessage}`
       : "The AI service rejected the request.",
