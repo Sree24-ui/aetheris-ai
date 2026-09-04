@@ -8,6 +8,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import path from "path";
 import pg from "pg";
+import { resolveSslConfig } from "./ssl.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,7 +28,10 @@ if (!connectionString) {
 
 const sql = readFileSync(path.join(__dirname, "schema.sql"), "utf-8");
 
-const client = new pg.Client({ connectionString, ssl: { rejectUnauthorized: false } });
+// H6: the migration runner verifies the database certificate too — it is the
+// connection that carries schema changes, so an unauthenticated endpoint here
+// is at least as serious as one in the app.
+const client = new pg.Client({ connectionString, ssl: resolveSslConfig(connectionString) });
 
 try {
   await client.connect();

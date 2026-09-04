@@ -1,4 +1,7 @@
 import { Pool } from "pg";
+// Shared with db/migrate.mjs so the app and the migration runner can never
+// disagree about whether the database certificate is verified.
+import { resolveSslConfig } from "../../db/ssl.mjs";
 
 declare global {
   var _pgPool: Pool | undefined;
@@ -12,7 +15,14 @@ export const pool =
   global._pgPool ??
   new Pool({
     connectionString,
-    ssl: connectionString?.includes("localhost") ? false : { rejectUnauthorized: false },
+    // H6: remote connections verify the server certificate. See db/ssl.mjs.
+    ssl: resolveSslConfig(connectionString),
+    // Bounds how much of the database's connection budget one instance can
+    // hold, and how long a stuck query can pin a connection open.
+    max: Number(process.env.DATABASE_POOL_MAX ?? 10),
+    idleTimeoutMillis: Number(process.env.DATABASE_IDLE_TIMEOUT_MS ?? 30_000),
+    connectionTimeoutMillis: Number(process.env.DATABASE_CONNECT_TIMEOUT_MS ?? 10_000),
+    statement_timeout: Number(process.env.DATABASE_STATEMENT_TIMEOUT_MS ?? 15_000),
   });
 
 if (process.env.NODE_ENV !== "production") {
