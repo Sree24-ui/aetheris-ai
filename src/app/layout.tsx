@@ -19,6 +19,20 @@ const montserrat = Montserrat({
   weight: ["600", "700"],
 });
 
+/**
+ * Every page is rendered per request.
+ *
+ * The Content Security Policy set in proxy.ts is nonce-based, and Next.js can
+ * only stamp a nonce onto its script tags while rendering a real request — a
+ * page prerendered at build time has no nonce, so under `strict-dynamic` the
+ * browser refuses to run its bootstrap and the app never hydrates. Static
+ * optimisation is therefore traded away deliberately in exchange for a
+ * script-src with no `unsafe-inline` and no `unsafe-eval`. Every page here is
+ * behind authentication or is a small marketing shell, so nothing was being
+ * cached at the edge that mattered.
+ */
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   metadataBase: new URL(APP_URL),
   title: APP_NAME,

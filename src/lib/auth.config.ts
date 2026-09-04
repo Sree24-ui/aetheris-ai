@@ -21,6 +21,22 @@ export const GOOGLE_CONFIGURED = Boolean(
 export const authConfig: NextAuthConfig = {
   session: { strategy: "jwt" },
   pages: { signIn: "/signin" },
+  /**
+   * Auth.js refuses a request whose Host header it does not trust, which is
+   * what produces `UntrustedHost` on a self-hosted deployment behind a proxy.
+   * Vercel is auto-detected; anywhere else the operator opts in explicitly by
+   * setting AUTH_TRUST_HOST=true, and must terminate TLS and set
+   * X-Forwarded-Host correctly for that to be safe.
+   */
+  trustHost: process.env.AUTH_TRUST_HOST === "true" || Boolean(process.env.VERCEL),
+  /**
+   * Secure, host-prefixed cookies outside development. `useSecureCookies`
+   * makes Auth.js apply the __Secure- / __Host- prefixes and the Secure flag,
+   * which a browser only accepts over HTTPS — so it stays off locally. The
+   * session cookie's httpOnly/sameSite=lax defaults are already correct and
+   * are deliberately not overridden here.
+   */
+  useSecureCookies: process.env.NODE_ENV === "production",
   providers: GOOGLE_CONFIGURED
     ? [
         Google({
