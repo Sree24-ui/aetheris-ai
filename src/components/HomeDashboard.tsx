@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Icon from "./Icon";
 import { loadMemory } from "@/lib/memory";
 import { errorMessage } from "@/lib/http";
+import { uploadDocument } from "@/lib/uploadDocument";
 import { DOCUMENT_ACCEPT_ATTRIBUTE } from "@/lib/appConfig";
 import type { DocumentSummary, LearnerMemory } from "@/lib/types";
 
@@ -27,6 +28,7 @@ export default function HomeDashboard({ onProceed, onRevise }: Props) {
   const [query, setQuery] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [memory, setMemory] = useState<LearnerMemory>(EMPTY_MEMORY);
 
   const [memoryError, setMemoryError] = useState<string | null>(null);
@@ -57,16 +59,17 @@ export default function HomeDashboard({ onProceed, onRevise }: Props) {
       setUploading(true);
       setUploadError(null);
       try {
-        const formData = new FormData();
-        formData.append("file", file);
-        const res = await fetch("/api/upload", { method: "POST", body: formData });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Upload failed");
-        onProceed({ topic: query.trim() || data.filename, doc: data });
+        // H11: the upload request only accepts the file now; indexing is a
+        // durable job this walks to completion, reporting progress.
+        const doc = await uploadDocument(file, {
+          onProgress: ({ progress }) => setUploadProgress(progress),
+        });
+        onProceed({ topic: query.trim() || doc.filename, doc });
       } catch (err) {
-        setUploadError((err as Error).message);
+        setUploadError(errorMessage(err));
       } finally {
         setUploading(false);
+        setUploadProgress(0);
       }
     };
     input.click();
@@ -108,7 +111,11 @@ export default function HomeDashboard({ onProceed, onRevise }: Props) {
               className="flex items-center justify-center gap-2 px-6 py-3 bg-white/5 hover:bg-white/10 rounded-xl text-secondary-fixed-dim font-body-md text-body-md transition-colors whitespace-nowrap border border-transparent hover:border-secondary/20 disabled:opacity-50"
             >
               <Icon name="upload_file" className="text-[20px]" />
-              {uploading ? "Processing..." : "Upload Notes"}
+              {uploading
+                ? uploadProgress > 0
+                  ? `Indexing ${Math.round(uploadProgress * 100)}%`
+                  : "Reading..."
+                : "Upload Notes"}
             </button>
             <button
               onClick={() => query.trim() && onProceed({ topic: query.trim() })}

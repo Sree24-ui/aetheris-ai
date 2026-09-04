@@ -4,6 +4,7 @@ import { useState } from "react";
 import Icon from "./Icon";
 import type { LearnerProfile, DocumentSummary } from "@/lib/types";
 import { apiRequest, errorMessage } from "@/lib/http";
+import { uploadDocument } from "@/lib/uploadDocument";
 import { LANGUAGES } from "@/lib/languages";
 import { hasVoiceFor, useVoices } from "@/hooks/useSpeech";
 import { DOCUMENT_ACCEPT_ATTRIBUTE } from "@/lib/appConfig";
@@ -51,6 +52,7 @@ export default function ConfigForm({
   const [topic, setTopic] = useState(initialTopic ?? "");
   const [doc, setDoc] = useState<DocumentSummary | null>(initialDoc ?? null);
   const [deleting, setDeleting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   /**
    * M10: "Remove" used to clear the local selection only, leaving the text,
@@ -129,20 +131,29 @@ export default function ConfigForm({
       setUploading(true);
       setError(null);
       try {
-        const formData = new FormData();
-        formData.append("file", file);
-        const res = await fetch("/api/upload", { method: "POST", body: formData });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Upload failed");
-        setDoc(data);
+        // H11: indexing is a durable job now; this walks it to completion and
+        // shows how far it has got.
+        setDoc(
+          await uploadDocument(file, {
+            onProgress: ({ progress }) => setUploadProgress(progress),
+          })
+        );
       } catch (err) {
-        setError((err as Error).message);
+        setError(errorMessage(err));
       } finally {
         setUploading(false);
+        setUploadProgress(0);
       }
     };
     input.click();
   }
+
+  /** What the upload button says while a document is being indexed. */
+  const uploadLabel = uploading
+    ? uploadProgress > 0
+      ? `Indexing ${Math.round(uploadProgress * 100)}%`
+      : "Reading..."
+    : null;
 
   function buildProfile(): LearnerProfile {
     return { level, language, availableMinutes: minutes, objective: objective || undefined, style };
@@ -221,7 +232,7 @@ export default function ConfigForm({
                     disabled={uploading}
                     className="text-xs text-on-surface-variant hover:text-tertiary-fixed-dim underline disabled:opacity-50"
                   >
-                    {uploading ? "Processing..." : "Replace document"}
+                    {uploadLabel ?? "Replace document"}
                   </button>
                   <button
                     onClick={handleRemoveDocument}
@@ -243,7 +254,7 @@ export default function ConfigForm({
                   disabled={uploading}
                   className="px-5 py-2.5 rounded-full bg-white/5 hover:bg-white/10 text-secondary-fixed-dim text-sm border border-white/10 disabled:opacity-50"
                 >
-                  {uploading ? "Processing..." : "Upload material"}
+                  {uploadLabel ?? "Upload material"}
                 </button>
               </div>
             )}

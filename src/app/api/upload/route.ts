@@ -8,18 +8,24 @@ import {
   UploadRejected,
   admitUpload,
 } from "@/lib/security/uploads";
-import { LlmError } from "@/lib/llmError";
 import { parseDocument } from "@/lib/documentParser";
-import { ingestDocument } from "@/lib/vectorStore";
-import { extractConcepts } from "@/lib/teachingAgent";
-import type { DocumentSummary } from "@/lib/types";
+import { enqueueIngestion } from "@/lib/ingestion/jobs";
 
 export const runtime = "nodejs";
-// Kept under the 60s ceiling that Vercel's Hobby tier enforces: a higher
-// value is not honoured there, and the platform kills the function before
-// this route's own timeout fires, leaving nothing useful in the logs.
 export const maxDuration = 60;
 
+/**
+ * Accepts an upload and queues its ingestion (H11).
+ *
+ * This used to extract the file, chunk it, embed every chunk, write the
+ * database and run concept extraction inside one request with a 60-second
+ * ceiling — so a cold start, a large file or a slow provider left the learner
+ * with no completion signal and a half-written document.
+ *
+ * It now does the bounded part (admission checks and text extraction) and
+ * returns a job id. The expensive part advances in slices through
+ * /api/documents/jobs, each of which commits its own progress.
+ */
 export const POST = defineRoute(
   {
     name: "upload",
@@ -27,7 +33,7 @@ export const POST = defineRoute(
     // schema path; every byte of it is still bounded (see admitUpload).
     rateLimit: RATE_LIMITS.upload,
   },
-  async ({ req, userId, requestId }) => {
+  async ({ req, userId }) => {
     // Rejected before the body is buffered when the client declares a size
     // over the limit. The declared value is not trusted on its own — the
     // real length is checked again after reading.
@@ -74,38 +80,9 @@ export const POST = defineRoute(
     }
 
     const docId = randomUUID();
-    const { numChunks, preview, sample } = await ingestDocument(
-      docId,
-      userId,
-      admitted.name,
-      text
-    );
+    const jobId = randomUUID();
+    await enqueueIngestion({ jobId, documentId: docId, userId, filename: admitted.name, text });
 
-    // The document itself is already indexed and usable at this point, so a
-    // failed concept extraction must not fail the whole upload — but it does
-    // need to be reported, or an empty tag list looks like a broken upload.
-    let concepts: string[] = [];
-    let conceptsWarning: string | undefined;
-    try {
-      concepts = await extractConcepts(sample);
-    } catch (err) {
-      // Only an LlmError carries a sentence written for a learner. Anything
-      // else keeps its detail in the log and reaches the UI as a generic line.
-      console.error(`[upload ${requestId}] concept extraction failed`, err);
-      const reason =
-        err instanceof LlmError ? err.userMessage : "Try uploading the document again.";
-      conceptsWarning = `Document indexed, but key concepts couldn't be extracted. ${reason}`;
-    }
-
-    const summary: DocumentSummary = {
-      docId,
-      filename: admitted.name,
-      numChunks,
-      language: "auto",
-      preview,
-      concepts,
-      conceptsWarning,
-    };
-    return summary;
+    return { docId, jobId, filename: admitted.name, status: "pending" as const };
   }
 );

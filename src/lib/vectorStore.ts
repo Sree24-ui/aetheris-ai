@@ -11,7 +11,7 @@ import {
   RETRIEVAL_TOP_K,
 } from "./appConfig";
 import { fuseRankings, selectPassages, type Candidate } from "./retrieval/fusion";
-import type { SourceChunkRef } from "./types";
+import type { DocumentSummary, SourceChunkRef } from "./types";
 
 // Documents live in Postgres, not on disk.
 //
@@ -198,22 +198,23 @@ async function vectorCandidates(
   return scored.slice(0, RETRIEVAL_CANDIDATES);
 }
 
-export interface DocumentRecord {
-  docId: string;
-  filename: string;
-  numChunks: number;
-  uploadedAt: string;
-}
-
-/** Every document this learner has uploaded, newest first. */
-export async function listDocumentsForUser(userId: number): Promise<DocumentRecord[]> {
+/**
+ * Every document this learner has uploaded, newest first.
+ *
+ * `ingestStatus` is a fact about the row rather than something inferred from
+ * a chunk count, so a document still being indexed is visibly pending instead
+ * of looking like an empty one (H11).
+ */
+export async function listDocumentsForUser(userId: number): Promise<DocumentSummary[]> {
   const { rows } = await pool.query<{
     id: string;
     filename: string;
     num_chunks: number;
-    created_at: string;
+    ingest_status: string;
+    concepts: string[];
+    preview: string;
   }>(
-    `SELECT id, filename, num_chunks, created_at
+    `SELECT id, filename, num_chunks, ingest_status, concepts, preview
        FROM documents
       WHERE user_id = $1
       ORDER BY created_at DESC
@@ -224,7 +225,10 @@ export async function listDocumentsForUser(userId: number): Promise<DocumentReco
     docId: row.id,
     filename: row.filename,
     numChunks: row.num_chunks,
-    uploadedAt: row.created_at,
+    language: "auto",
+    preview: row.preview ?? "",
+    concepts: row.concepts ?? [],
+    ingestStatus: row.ingest_status,
   }));
 }
 

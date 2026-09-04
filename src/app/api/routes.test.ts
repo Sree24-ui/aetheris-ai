@@ -48,6 +48,8 @@ interface StubSession {
   state: Record<string, unknown>;
 }
 const sessions = new Map<string, StubSession>();
+/** In-memory ingestion jobs, keyed by id, with their owner. */
+const jobs = new Map<string, { userId: number; job: Record<string, unknown> }>();
 /** What the stubbed planner returns; includes a checkpoint with its answer. */
 const PLAN_WITH_KEY = {
   topic: "Algebra",
@@ -263,6 +265,49 @@ before(() => {
       },
     },
   });
+  mock.module(lib("ingestion/jobs.ts"), {
+    namedExports: {
+      CHUNKS_PER_SLICE: 8,
+      STALE_JOB_MS: 90_000,
+      jobProgress: (job: { status: string }) => (job.status === "succeeded" ? 1 : 0.5),
+      enqueueIngestion: async (params: { jobId: string; documentId: string; userId: number }) => {
+        const job = {
+          id: params.jobId,
+          documentId: params.documentId,
+          status: "queued",
+          totalChunks: 2,
+          nextChunkIndex: 0,
+          conceptsDone: false,
+          attempts: 0,
+          maxAttempts: 5,
+          error: null,
+        };
+        jobs.set(params.jobId, { userId: params.userId, job });
+        documents.set(params.documentId, params.userId);
+        return job;
+      },
+      loadJob: async (jobId: string, userId: number) => {
+        const row = jobs.get(jobId);
+        return row && row.userId === userId ? row.job : null;
+      },
+      runSlice: async (jobId: string, userId: number) => {
+        const row = jobs.get(jobId);
+        if (!row || row.userId !== userId) return null;
+        const next = Number(row.job.nextChunkIndex) + 1;
+        row.job = {
+          ...row.job,
+          nextChunkIndex: next,
+          status: next >= Number(row.job.totalChunks) ? "succeeded" : "queued",
+        };
+        return row.job;
+      },
+    },
+  });
+  mock.module(lib("documentParser.ts"), {
+    namedExports: {
+      parseDocument: async () => "A paragraph of extracted text that is long enough to keep.",
+    },
+  });
   mock.module(lib("db.ts"), {
     namedExports: { pool: { query: async () => ({ rows: [] }) } },
   });
@@ -279,6 +324,7 @@ beforeEach(async () => {
   shortAnswerGrades = 0;
   quizFixture = [];
   sessions.clear();
+  jobs.clear();
   const { resetRateLimits } = await import(lib("security/rateLimit.ts"));
   resetRateLimits();
 });
@@ -340,6 +386,12 @@ const validPlan = {
 /** Every sensitive route, with a body that would otherwise be accepted. */
 const matrix: { route: string; method: "GET" | "POST" | "PATCH" | "DELETE"; body?: unknown }[] = [
   { route: "documents", method: "GET" },
+  { route: "documents/jobs", method: "GET" },
+  {
+    route: "documents/jobs",
+    method: "POST",
+    body: { jobId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301" },
+  },
   { route: "documents", method: "DELETE", body: { docId: OWNED_DOC } },
   { route: "instruction", method: "POST", body: { text: "teach me algebra" } },
   { route: "learning-path", method: "POST", body: { topic: "Algebra", profile: validProfile } },
@@ -999,6 +1051,69 @@ test("a report request cannot smuggle its own quiz results", async () => {
     })
   );
   // No quizId at all: the body no longer has a field that could carry marks.
+  assert.equal(response.status, 400);
+});
+
+// --- Durable ingestion (H11) ----------------------------------------------
+
+/** Uploads a small text file through the real route. */
+async function upload(): Promise<{ docId: string; jobId: string }> {
+  const form = new FormData();
+  form.append("file", new File(["some readable content"], "notes.txt", { type: "text/plain" }));
+  const { POST } = await loadRoute("upload");
+  const response = await POST(
+    new Request("https://aetheris.invalid/api/upload", { method: "POST", body: form })
+  );
+  assert.equal(response.status, 200);
+  return response.json();
+}
+
+test("an upload returns immediately with a job to follow", async () => {
+  session = { user: { id: "1" } };
+  const accepted = await upload();
+  assert.ok(accepted.docId);
+  assert.ok(accepted.jobId);
+
+  // The expensive work has not happened yet — that is the point.
+  const { GET } = await loadRoute("documents/jobs");
+  const status = await (
+    await GET(
+      new Request(`https://aetheris.invalid/api/documents/jobs?jobId=${accepted.jobId}`)
+    )
+  ).json();
+  assert.equal(status.job.status, "queued");
+});
+
+test("ingestion advances a slice at a time and finishes", async () => {
+  session = { user: { id: "1" } };
+  const accepted = await upload();
+  const { POST } = await loadRoute("documents/jobs");
+
+  const first = await (await POST(post({ jobId: accepted.jobId }))).json();
+  assert.equal(first.job.status, "queued", "one slice should not finish a two-chunk document");
+  const second = await (await POST(post({ jobId: accepted.jobId }))).json();
+  assert.equal(second.job.status, "succeeded");
+  assert.equal(second.progress, 1);
+});
+
+test("another learner cannot read or drive someone else's ingestion", async () => {
+  session = { user: { id: "1" } };
+  const accepted = await upload();
+
+  session = { user: { id: "2" } };
+  const { GET, POST } = await loadRoute("documents/jobs");
+  const read = await GET(
+    new Request(`https://aetheris.invalid/api/documents/jobs?jobId=${accepted.jobId}`)
+  );
+  assert.equal(read.status, 404);
+  const drive = await POST(post({ jobId: accepted.jobId }));
+  assert.equal(drive.status, 404);
+});
+
+test("a status request without a job id is a 400", async () => {
+  session = { user: { id: "1" } };
+  const { GET } = await loadRoute("documents/jobs");
+  const response = await GET(new Request("https://aetheris.invalid/api/documents/jobs"));
   assert.equal(response.status, 400);
 });
 

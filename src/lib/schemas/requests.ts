@@ -251,6 +251,10 @@ export const deleteDocumentRequestSchema = z.object({
   docId: z.uuid(),
 });
 
+export const ingestionJobRequestSchema = z.object({
+  jobId: z.uuid(),
+});
+
 // --- /api/profile ---------------------------------------------------------
 
 export const profilePatchSchema = z.object({

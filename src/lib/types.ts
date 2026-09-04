@@ -137,6 +137,8 @@ export interface DocumentSummary {
    * timeout). Distinguishes "no concepts found" from "couldn't look".
    */
   conceptsWarning?: string;
+  /** "pending" while ingestion is still running, "ready" once it has finished. */
+  ingestStatus?: string;
 }
 
 export interface TranscriptMessage {
