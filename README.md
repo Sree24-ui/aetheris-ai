@@ -40,6 +40,8 @@ The app is a single Next.js full-stack application. A student either uploads cou
 | 11 | Adaptive response to performance | `evaluateAnswer()` misconception detection + remediation flow |
 | 12 | Working application/prototype | This app — see Setup below |
 
+Beyond the mandatory list, the app has accounts (email/password, with optional Google OAuth) backed by Postgres, so learner history and uploaded documents follow the account rather than the browser, and a **Settings** screen (`SettingsDashboard.tsx`) for accent palette, background density, motion intensity and narration voice.
+
 ## System Architecture
 
 ```
@@ -68,7 +70,7 @@ No lesson state lives on the server between requests except the ingested documen
 
 ## AI/ML Models Used
 
-- **LLM**: routed through [OpenRouter](https://openrouter.ai) (`OPENROUTER_API_KEY`), defaulting to a free-tier model chain (`OPENROUTER_MODEL`, with `OPENROUTER_FALLBACK_MODELS` tried in order on error/timeout/rate-limit). This is provider-agnostic — pointing `OPENROUTER_MODEL` at `anthropic/claude-sonnet-4.5` or `openai/gpt-4.1` (or swapping the client in `src/lib/llm.ts` for a direct Anthropic/OpenAI SDK) is a one-line change and will materially improve reliability and lesson quality over the free tier.
+- **LLM**: a pluggable provider layer (`src/lib/llm.ts`, `src/lib/providers/`) selected with `LLM_PROVIDER` — `groq` (default) or `gemini`, each hitting the vendor's API directly. Retry, fallback and timeout handling is shared across both, so switching provider is an environment-variable change rather than a code change.
 - **Embeddings**: local, in-process — `Xenova/all-MiniLM-L6-v2` via `@xenova/transformers` (ONNX runtime, runs on CPU, no external API call, no cost).
 
 ## RAG Implementation
@@ -98,11 +100,13 @@ Two layers of assessment: (1) in-lesson **checkpoint questions** embedded in the
 
 ## Multilingual Implementation
 
-The learner's `language` field is passed into every generation prompt, so lesson content is authored directly in the target language rather than translated after the fact (works regardless of the uploaded material's language — e.g. an English textbook taught in Hindi). Mid-lesson, switching the language dropdown calls `translateSection` for the current and all remaining sections, preserving ids/structure/visual type so the lesson state and progress aren't lost. Speech uses a language-to-BCP47 map (`useSpeech.ts`) covering English, Hindi, Hinglish, and 18+ other languages to select a matching browser TTS voice.
+The learner's `language` field is passed into every generation prompt, so lesson content is authored directly in the target language rather than translated after the fact (works regardless of the uploaded material's language — e.g. an English textbook taught in Hindi). Mid-lesson, switching the language dropdown calls `translateSection` for the current and all remaining sections, preserving ids/structure/visual type so the lesson state and progress aren't lost. Speech uses a language-to-BCP47 map (`useSpeech.ts`) covering all 22 languages to select a matching browser TTS voice, falling back from an exact locale match to any voice sharing the language prefix. Where the device has no voice at all for a language, the app says so rather than narrating silently — see Voice Implementation.
 
 ## Voice Implementation
 
 Uses the browser-native **Web Speech API** (`SpeechSynthesis`) — zero cost, no API key, works offline once the page is loaded. A watchdog timer (`src/hooks/useSpeech.ts`) guarantees the lesson always advances even if a browser/environment never fires TTS lifecycle events (observed in headless/automated testing), so a missing voice can never hang the lesson.
+
+Voices come from the operating system, not the app, so **not every offered language can actually be narrated on every device**. `hasVoiceFor()` resolves the lesson language against the installed voice list, and both places a language is chosen — the setup form and the in-lesson switcher — say so plainly when no voice exists, rather than letting the lesson run silently. On a stock macOS install, 17 of the 22 languages resolve to a voice; Marathi, Gujarati, Malayalam, Punjabi and Urdu do not. Narration is the only thing affected: slides, diagrams, captions, checkpoints and the quiz are unchanged.
 
 ## Avatar / Video Generation Approach
 
@@ -110,7 +114,9 @@ Rather than a third-party avatar API, the avatar is an animated inline SVG (`Ava
 
 ## APIs and Third-Party Services
 
-- **OpenRouter** (`openrouter.ai`) — LLM inference gateway. Requires `OPENROUTER_API_KEY`.
+- **Google Gemini** or **Groq** — LLM inference, selected with `LLM_PROVIDER` (defaults to `groq`). Requires `GEMINI_API_KEY` or `GROQ_API_KEY` accordingly; `GEMINI_MODEL` / `GROQ_MODEL` override the default model.
+- **Postgres** (Neon on the hosted demo) — accounts, sessions, learner history, and uploaded-document chunks with their embeddings.
+- **Google OAuth** — optional. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to enable "Continue with Google"; leave them unset and the provider isn't registered, so the button is hidden rather than shown and broken. Email/password sign-in works either way.
 - **Everything else runs locally**: local embeddings (no API), browser Web Speech API (no API), browser `getDisplayMedia`/`MediaRecorder` (no API), Mermaid/KaTeX/Prism (client-side rendering libraries, no network calls).
 
 ## Setup Instructions
@@ -119,10 +125,14 @@ Rather than a third-party avatar API, the avatar is an animated inline SVG (`Ava
 cd ai-teacher
 npm install
 cp .env.local.example .env.local
-# edit .env.local and set OPENROUTER_API_KEY=sk-or-v1-...
+# edit .env.local: set GROQ_API_KEY (or GEMINI_API_KEY with LLM_PROVIDER=gemini),
+# plus DATABASE_URL and AUTH_SECRET (openssl rand -base64 32)
+npm run migrate    # creates the accounts, history and document tables
 npm run dev
 # open http://localhost:3000
 ```
+
+`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` are optional — without them the app runs on email/password sign-in and hides the Google button.
 
 First document upload triggers a one-time download of the local embedding model (~90MB, cached afterward).
 
@@ -133,7 +143,9 @@ The [live demo](https://ai-teacher-mu-seven.vercel.app) is deployed on Vercel di
 ```bash
 npm install -g vercel
 vercel link
-vercel env add OPENROUTER_API_KEY production   # and OPENROUTER_MODEL / OPENROUTER_FALLBACK_MODELS if overriding the defaults
+vercel env add GROQ_API_KEY production      # or GEMINI_API_KEY, with LLM_PROVIDER=gemini
+vercel env add DATABASE_URL production      # Postgres connection string
+vercel env add AUTH_SECRET production       # openssl rand -base64 32
 vercel --prod
 ```
 
@@ -144,14 +156,14 @@ npm run build
 npm start
 ```
 
-Set `OPENROUTER_API_KEY` (and optionally `OPENROUTER_MODEL` / `OPENROUTER_FALLBACK_MODELS`) as environment variables on the host. `src/lib/vectorStore.ts` writes uploaded-document vectors to `/tmp` when running on Vercel/Lambda (detected via `VERCEL`/`AWS_LAMBDA_FUNCTION_NAME`) and to a project-relative `.data/documents` folder otherwise — `/tmp` avoids the read-only-filesystem crash serverless platforms would otherwise hit, but it isn't guaranteed to persist between separate function invocations, so document upload/RAG is not fully reliable on the hosted demo (see Known Limitations). For a persistent production deployment, swap those filesystem calls for a real database or object store.
+Set `GROQ_API_KEY` (or `GEMINI_API_KEY` with `LLM_PROVIDER=gemini`), `DATABASE_URL` and `AUTH_SECRET` as environment variables on the host, and run `npm run migrate` once against that database. Uploaded documents and their chunk embeddings are stored in Postgres (`documents` / `document_chunks`), so uploads survive across serverless instances and deployments.
 
 ## Known Limitations
 
-- **Free-tier LLM latency/flakiness**: the default `OPENROUTER_MODEL` (`minimax/minimax-m3:free`) and its fallbacks are free, shared-pool models on OpenRouter and can be slow (10–60s) or occasionally time out entirely under load, despite the app's retry/fallback/timeout handling. Pointing `OPENROUTER_MODEL` at a paid model (e.g. `anthropic/claude-sonnet-4.5`) removes this limitation.
-- **Document upload/RAG on the hosted demo**: the live Vercel deployment stores uploaded-document vectors in `/tmp`. The upload step itself succeeds (parsing, chunking, local embeddings, and concept extraction all run fine), but in testing, the follow-up "plan a lesson from this document" request essentially always lands on a different serverless instance than the one that handled the upload and gets a "Document not found" error — Vercel's routing doesn't reliably reuse the same warm instance across separate requests. Treat "Upload material" as effectively local-only on this hosted demo; **topic-based teaching (no upload) works fully there**. Uploads work reliably end-to-end when self-hosted or run locally (`npm run dev`), where they're written to disk under `.data/documents` instead. Making uploads reliable on serverless would need swapping `src/lib/vectorStore.ts`'s filesystem calls for a real database or object store (e.g. a vector DB or S3-backed store) — noted above under Deployment Instructions.
-- **TTS voice availability/quality** depends on the browser/OS's installed voices; some environments have no voices for a given language, in which case the avatar's mouth won't move but the lesson still advances (via the watchdog) and on-screen text/visuals are still shown.
+- **Free-tier LLM latency/flakiness**: the default provider (`LLM_PROVIDER=groq`) runs on a free, shared pool and can be slow or occasionally time out under load, despite the app's retry/fallback/timeout handling. Switching to `gemini`, or pointing `GROQ_MODEL`/`GEMINI_MODEL` at a paid tier, removes this.
+- **TTS voice availability**: narration voices come from the browser/OS, not the app. On a stock macOS install, 5 of the 22 offered languages (Marathi, Gujarati, Malayalam, Punjabi, Urdu) have no installed voice. The app detects this and says so up front instead of running a silent lesson, but it cannot supply the voice — that needs a server-side TTS service.
 - **Video export** uses tab capture (`getDisplayMedia`), which requires the user to grant screen-share permission each time and to enable "share tab audio" — it does not run headless/automatically.
-- **No server-side lesson persistence**: lesson/session state lives in the browser; refreshing mid-lesson restarts the current lesson (learner history/progress in `localStorage` is unaffected).
+- **No mid-lesson resume**: the in-progress lesson lives in browser state, so refreshing mid-lesson restarts that lesson. Completed history and progress are stored server-side against the account and are unaffected.
 - **PPTX/PDF parsing is text-only**: embedded images/diagrams in source material are not extracted or shown; only text content is used for grounding.
-- **Single learner profile per browser**: there is no login/multi-user support — `localStorage` history is per-browser, not per-account.
+- **Interface preferences are per-device**: accent, background density, motion and narration voice are stored in `localStorage` rather than on the account, so they don't follow a learner to another browser or machine.
+- **No automated tests**: the project has no test suite; changes are verified manually.
