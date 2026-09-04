@@ -367,3 +367,42 @@ a[href]:active,
 @media (prefers-reduced-motion: reduce) {
   .bubble-bg { animation: none; opacity: 0.15; }
 }
+
+/* --- Interface preferences (Settings → Atmosphere) ----------------------
+   Driven by data attributes that AppearanceEffect writes onto <html> from
+   the stored prefs in src/lib/appearance.ts. Accent colours are applied as
+   inline custom properties on the same element, so they simply override the
+   @theme defaults above. */
+
+/* Bubble density: how much ambient background survives. */
+[data-bubbles="off"] .ambient-blob,
+[data-bubbles="off"] .bubble-bg,
+[data-bubbles="off"] .grid-overlay {
+  display: none;
+}
+[data-bubbles="sparse"] .blob-2,
+[data-bubbles="sparse"] .bubble-3,
+[data-bubbles="sparse"] .bubble-4 {
+  display: none;
+}
+
+/* Motion intensity. "still" is also what a learner who finds the drifting
+   background distracting needs, so it stops every ambient animation rather
+   than merely slowing it. */
+[data-motion="still"] .ambient-blob,
+[data-motion="still"] .bubble-bg,
+[data-motion="still"] .animate-float,
+[data-motion="still"] .animate-float-delayed,
+[data-motion="still"] .animate-pulse {
+  animation: none;
+}
+[data-motion="fluid"] .ambient-blob {
+  animation-duration: 11s;
+}
+[data-motion="fluid"] .bubble-bg {
+  animation-duration: 12s;
+}
+[data-motion="fluid"] .animate-float,
+[data-motion="fluid"] .animate-float-delayed {
+  animation-duration: 3s;
+}

@@ -19,9 +19,10 @@ import ReportPanel from "@/components/ReportPanel";
 import LearningPathPanel from "@/components/LearningPathPanel";
 import LearnerDashboard from "@/components/LearnerDashboard";
 import ProfileDashboard from "@/components/ProfileDashboard";
+import SettingsDashboard from "@/components/SettingsDashboard";
 import { addHistoryEntry, setCurrentPath, advancePath, loadMemory } from "@/lib/memory";
 
-type Stage = "home" | "config" | "planning" | "teaching" | "quiz" | "report" | "path" | "dashboard" | "profile";
+type Stage = "home" | "config" | "planning" | "teaching" | "quiz" | "report" | "path" | "dashboard" | "profile" | "settings";
 
 export default function Home() {
   const [stage, setStage] = useState<Stage>("home");
@@ -172,7 +173,15 @@ export default function Home() {
   }
 
   const activeNav =
-    stage === "dashboard" ? "progress" : stage === "profile" ? "profile" : stage === "home" ? "home" : "other";
+    stage === "dashboard"
+      ? "progress"
+      : stage === "profile"
+        ? "profile"
+        : stage === "settings"
+          ? "settings"
+          : stage === "home"
+            ? "home"
+            : "other";
 
   return (
     <AppShell
@@ -180,6 +189,7 @@ export default function Home() {
       onGoHome={reset}
       onGoProgress={() => setStage("dashboard")}
       onGoProfile={() => setStage("profile")}
+      onGoSettings={() => setStage("settings")}
     >
       {error && (
         <div className="max-w-2xl mx-auto mt-6 text-sm text-error bg-error-container/20 border border-error/30 rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap">
@@ -261,6 +271,12 @@ export default function Home() {
       {stage === "profile" && (
         <div className="p-container-padding lg:p-8">
           <ProfileDashboard onClose={reset} />
+        </div>
+      )}
+
+      {stage === "settings" && (
+        <div className="p-container-padding lg:p-8">
+          <SettingsDashboard onGoProfile={() => setStage("profile")} />
         </div>
       )}
     </AppShell>

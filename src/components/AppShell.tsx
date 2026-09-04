@@ -5,14 +5,15 @@ import Icon from "./Icon";
 import UserAvatar from "./UserAvatar";
 
 interface AppShellProps {
-  active: "home" | "progress" | "profile" | "other";
+  active: "home" | "progress" | "profile" | "settings" | "other";
   onGoHome: () => void;
   onGoProgress: () => void;
   onGoProfile: () => void;
+  onGoSettings: () => void;
   children: React.ReactNode;
 }
 
-export default function AppShell({ active, onGoHome, onGoProgress, onGoProfile, children }: AppShellProps) {
+export default function AppShell({ active, onGoHome, onGoProgress, onGoProfile, onGoSettings, children }: AppShellProps) {
   const { data: session } = useSession();
   const userLabel = session?.user?.name || session?.user?.email || "Signed in";
 
@@ -72,6 +73,19 @@ export default function AppShell({ active, onGoHome, onGoProgress, onGoProfile, 
               Profile
             </button>
           </li>
+          <li>
+            <button
+              onClick={onGoSettings}
+              className={`w-full flex items-center gap-4 rounded-full p-3 font-body-md text-body-md transition-all ${
+                active === "settings"
+                  ? "bg-primary-container/20 text-primary-fixed-dim"
+                  : "text-on-surface-variant hover:bg-white/10 hover:text-tertiary-fixed-dim"
+              }`}
+            >
+              <Icon name="tune" filled={active === "settings"} />
+              Settings
+            </button>
+          </li>
         </ul>
 
         <div className="mt-auto space-y-3">
@@ -117,6 +131,13 @@ export default function AppShell({ active, onGoHome, onGoProgress, onGoProfile, 
             className={`p-2 rounded-full ${active === "progress" ? "text-primary-fixed-dim" : "text-on-surface-variant"}`}
           >
             <Icon name="analytics" filled={active === "progress"} />
+          </button>
+          <button
+            onClick={onGoSettings}
+            title="Settings"
+            className={`p-2 rounded-full ${active === "settings" ? "text-primary-fixed-dim" : "text-on-surface-variant"}`}
+          >
+            <Icon name="tune" filled={active === "settings"} />
           </button>
           <button onClick={onGoProfile} className="p-1 rounded-full" title="Profile">
             <UserAvatar name={session?.user?.name} email={session?.user?.email} image={session?.user?.image} size={28} />

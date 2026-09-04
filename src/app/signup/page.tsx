@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { signIn } from "next-auth/react";
+import { getProviders, signIn } from "next-auth/react";
 import AuthLayout from "@/components/AuthLayout";
 import GoogleIcon from "@/components/GoogleIcon";
 import Icon from "@/components/Icon";
@@ -17,6 +17,16 @@ export default function SignUpPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  // Google is optional: without GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET the
+  // provider isn't registered, and showing the button anyway sent people to
+  // /api/auth/error?error=Configuration with no explanation.
+  const [googleAvailable, setGoogleAvailable] = useState(false);
+
+  useEffect(() => {
+    getProviders()
+      .then((providers) => setGoogleAvailable(Boolean(providers?.google)))
+      .catch(() => setGoogleAvailable(false));
+  }, []);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -136,27 +146,31 @@ export default function SignUpPage() {
         </button>
       </form>
 
-      <div className="flex items-center gap-3 my-6">
-        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-on-surface-variant/20 to-transparent" />
-        <span className="font-label-caps text-label-caps text-on-surface-variant uppercase">Or</span>
-        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-on-surface-variant/20 to-transparent" />
-      </div>
+      {googleAvailable && (
+        <>
+        <div className="flex items-center gap-3 my-6">
+          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-on-surface-variant/20 to-transparent" />
+          <span className="font-label-caps text-label-caps text-on-surface-variant uppercase">Or</span>
+          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-on-surface-variant/20 to-transparent" />
+        </div>
 
-      <button
-        onClick={() => {
-          setGoogleLoading(true);
-          signIn("google", { callbackUrl: "/app" });
-        }}
-        disabled={googleLoading}
-        className="w-full py-4 rounded-full bg-surface/30 backdrop-blur-md border border-white/5 text-on-surface font-medium flex items-center justify-center gap-3 hover:bg-surface/50 hover:border-primary/30 transition-all duration-300 disabled:opacity-60"
-      >
-        {googleLoading ? (
-          <span className="w-4 h-4 rounded-full border-2 border-on-surface/30 border-t-on-surface animate-spin" />
-        ) : (
-          <GoogleIcon />
-        )}
-        Continue with Google
-      </button>
+        <button
+          onClick={() => {
+            setGoogleLoading(true);
+            signIn("google", { callbackUrl: "/app" });
+          }}
+          disabled={googleLoading}
+          className="w-full py-4 rounded-full bg-surface/30 backdrop-blur-md border border-white/5 text-on-surface font-medium flex items-center justify-center gap-3 hover:bg-surface/50 hover:border-primary/30 transition-all duration-300 disabled:opacity-60"
+        >
+          {googleLoading ? (
+            <span className="w-4 h-4 rounded-full border-2 border-on-surface/30 border-t-on-surface animate-spin" />
+          ) : (
+            <GoogleIcon />
+          )}
+          Continue with Google
+        </button>
+        </>
+      )}
 
       <p className="text-center text-sm text-on-surface-variant mt-8">
         Already have an account?{" "}

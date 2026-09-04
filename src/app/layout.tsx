@@ -3,6 +3,7 @@ import { Inter, Montserrat } from "next/font/google";
 import "./globals.css";
 import "katex/dist/katex.min.css";
 import AuthProvider from "@/components/AuthProvider";
+import AppearanceEffect from "@/components/AppearanceEffect";
 import { APP_NAME, APP_DESCRIPTION, APP_URL } from "@/lib/appConfig";
 
 const inter = Inter({
@@ -43,6 +44,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         />
       </head>
       <body className="min-h-full flex flex-col void-bg">
+        <AppearanceEffect />
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
