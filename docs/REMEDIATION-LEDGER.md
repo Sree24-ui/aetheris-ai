@@ -14,7 +14,7 @@ open carries its current status and the exact next step.
 ```bash
 npm run lint       # eslint            -> clean
 npx tsc --noEmit   # TypeScript strict -> clean
-npm test           # 298 tests         -> 298 pass, 0 fail
+npm test           # 316 tests         -> 316 pass, 0 fail
 npm run build      # production build  -> compiled, 21 routes
 npm run check      # all three of the above in sequence
 ```
@@ -27,9 +27,9 @@ none are being hidden.
 
 | Status | Count | IDs |
 | --- | --- | --- |
-| Fixed, with regression tests | 14 | C1, C2, H1, H2, H4, H5, H6, H7, M1, M2, M7, M8, M9, M15 |
+| Fixed, with regression tests | 15 | C1, C2, H1, H2, H4, H5, H6, H7, H9, M1, M2, M7, M8, M9, M15 |
 | Partially fixed | 6 | H3, H8, H10, H12, M12, M16 |
-| Confirmed, still open — Phase 1 | 3 | H9, M10, M11 |
+| Confirmed, still open — Phase 1 | 2 | M10, M11 |
 | Confirmed, still open — Phase 2 | 5 | H11, M3, M4, M5, M6 |
 | Confirmed, still open — Phase 3/4 | 2 | M13, L2 |
 | Already accurate / closed | 2 | M14, L1 |
@@ -37,8 +37,8 @@ none are being hidden.
 All 32 findings (C1–C2, H1–H12, M1–M16, L1–L2) are accounted for above.
 
 No confirmed **critical or high security** finding remains open. The highs
-still outstanding — H9, H11, and the checkpoint half of H10 — are reliability
-and data-integrity findings, which the report itself places in Phases 1 and 2.
+still outstanding — H11, and the checkpoint half of H10 — are reliability and
+data-integrity findings, which the report itself places in Phases 1 and 2.
 
 ---
 
@@ -310,9 +310,47 @@ and data-integrity findings, which the report itself places in Phases 1 and 2.
 
 ### H9 — Speech cancellation and pause races
 
-- **Status:** Confirmed, open. Phase 1. `src/hooks/useSpeech.ts` unchanged —
-  one shared `finishRef`, `stop()` clears it without resolving the pending
-  promise, and a new utterance overwrites pending completion state.
+- **Status:** Fixed
+- **Confirmed at:** `src/hooks/useSpeech.ts` kept one shared `finishRef`,
+  which produced three distinct races that a learner hits in an ordinary
+  lesson. `stop()` cleared the callback without resolving the promise it
+  belonged to, so `await speak(...)` never returned and the lesson froze —
+  the component had accumulated `cancelled`/`handledRef` guards to work around
+  exactly that. Starting a new utterance overwrote the previous one's pending
+  completion, so the old promise settled against the new utterance's events.
+  And the watchdog kept counting across a pause, so a learner who paused to
+  think came back to a lesson that had moved on.
+- **Implementation:**
+  - `src/lib/speech/controller.ts` — the state machine, behind a `SpeechEngine`
+    interface so none of it needs a browser. Every utterance has an id, every
+    handler checks it belongs to the utterance still in flight, and every exit
+    (end, error, timeout, cancel, replacement, unmount) goes through one
+    `settle` that resolves exactly once. Starting a new utterance settles the
+    previous promise as cancelled rather than stranding it.
+  - `speak` now resolves with *why* narration finished. `TeachingSession`
+    advances only on a real ending, so skipping, pausing, unmounting or
+    previewing a voice can no longer look like a section that was taught.
+  - Pause suspends the watchdog and records the time still owed; resume
+    restores only that.
+  - `AbortSignal` cancellation, and `dispose()` on unmount releases anyone
+    waiting instead of stranding them.
+  - `src/lib/speech/browserEngine.ts` is the only file that touches
+    `window.speechSynthesis`; it also keeps a live reference to each utterance
+    until it finishes, working around Chrome's collected-mid-speech bugs.
+  - The avatar's mouth now follows the state instead of running its own timer
+    beside it, so it cannot be left flapping after narration stops.
+- **Tests:** `src/lib/speech/controller.test.ts` — 18 cases against a fake
+  engine and a fake clock, so every race is deterministic: stop resolves,
+  cancelled is distinguishable from ended, replacement settles the old
+  promise, a late event from a superseded utterance is ignored, rapid
+  replacement settles each promise exactly once, a missing `onend` still
+  releases the lesson, the watchdog does not outlive its utterance or fire
+  while paused, resume restores only the remaining time, abort, dispose, and
+  a preview during narration.
+- **Residual risk:** `SettingsDashboard` still previews a voice through
+  `window.speechSynthesis` directly rather than the controller. It is a
+  separate screen with no lesson running, so it cannot interrupt narration
+  today — but it should move onto the hook when that screen is next touched.
 
 ### H10 — Assessment authority split between model and client
 
@@ -440,12 +478,8 @@ staging before production.
 
 Phase 1 continues, in this order:
 
-1. **H9** — rewrite `useSpeech` as an explicit state machine: per-utterance
-   ids, exactly-once settlement, `AbortSignal` cancellation, watchdogs
-   suspended during pause, preview isolated from lesson narration, and a
-   manual "continue" fallback when the browser cannot narrate.
-2. **M10/M11** — document deletion and retention; VideoRecorder track
+1. **M10/M11** — document deletion and retention; VideoRecorder track
    cleanup, object-URL revocation and duration/size caps.
-3. **Durable `lesson_sessions`** — the server-owned aggregate that closes the
+2. **Durable `lesson_sessions`** — the server-owned aggregate that closes the
    rest of H8 (dashboard rehydration, one transactional completion), the rest
    of H10 (checkpoint keys off the client), and gives refresh-and-resume.

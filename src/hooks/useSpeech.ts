@@ -5,10 +5,13 @@ import { DEFAULT_VOICE_PREFS, type VoicePrefs } from "@/lib/voicePrefs";
 import {
   MOUTH_FLAP_MS,
   SPEECH_MS_PER_CHAR,
-  SPEECH_RESUME_WATCHDOG_MS,
   SPEECH_WATCHDOG_MAX_MS,
   SPEECH_WATCHDOG_MIN_MS,
 } from "@/lib/appConfig";
+import { SpeechController, type SpeechOutcome, type SpeechState } from "@/lib/speech/controller";
+import { availableVoices, createBrowserEngine, speechSupported } from "@/lib/speech/browserEngine";
+
+export type { SpeechOutcome, SpeechState };
 
 const LANGUAGE_TO_BCP47: Record<string, string> = {
   english: "en-US",
@@ -43,8 +46,6 @@ export function languageToBCP47(language: string): string {
   return LANGUAGE_TO_BCP47[key] || (key.length <= 5 && key.includes("-") ? language : "en-US");
 }
 
-export type SpeechState = "idle" | "speaking" | "paused";
-
 /**
  * The browser's installed voices. Chrome populates the list asynchronously and
  * returns an empty array on the first call, so every consumer has to listen for
@@ -53,7 +54,7 @@ export type SpeechState = "idle" | "speaking" | "paused";
 export function useVoices(): SpeechSynthesisVoice[] {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   useEffect(() => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    if (!speechSupported()) return;
     const load = () => setVoices(window.speechSynthesis.getVoices());
     load();
     window.speechSynthesis.addEventListener("voiceschanged", load);
@@ -78,40 +79,73 @@ export function hasVoiceFor(language: string, voices: SpeechSynthesisVoice[]): b
   return voices.some((v) => v.lang.toLowerCase().startsWith(prefix));
 }
 
+/**
+ * Narration, on top of the state machine in `@/lib/speech/controller`.
+ *
+ * H9: this hook used to hold one shared completion callback, which produced
+ * three races — `stop()` never resolved the promise it cancelled, a new
+ * utterance overwrote the previous one's pending completion, and the watchdog
+ * kept running across a pause. All of that now lives in the controller, where
+ * it is covered by deterministic tests; what is left here is React glue and
+ * voice selection.
+ *
+ * `speak` resolves with *why* narration finished. A caller that advances the
+ * lesson must check for "ended" — advancing on "cancelled" is how skipping a
+ * section or pausing used to jump the lesson forward.
+ */
 export function useSpeech(prefs: VoicePrefs = DEFAULT_VOICE_PREFS) {
   const [state, setState] = useState<SpeechState>("idle");
   const [mouthOpen, setMouthOpen] = useState(false);
   const voices = useVoices();
-  // Read through a ref so changing a slider mid-lesson does not give `speak`
-  // a new identity and re-trigger the narration effect that depends on it.
-  // Synced in an effect rather than during render, which React forbids.
+
+  // Read through refs so changing a slider mid-lesson does not give `speak` a
+  // new identity and re-trigger the narration effect that depends on it.
   const prefsRef = useRef(prefs);
   useEffect(() => {
     prefsRef.current = prefs;
   }, [prefs]);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const mouthTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const finishRef = useRef<(() => void) | null>(null);
-
-  const pickVoice = useCallback(
-    (bcp47: string): SpeechSynthesisVoice | undefined => {
-      // An explicit choice wins, but only while it can still speak the lesson's
-      // language — a learner who picked a French voice and then switched the
-      // lesson to Hindi should get a Hindi voice, not French-accented Hindi.
-      const chosenURI = prefsRef.current.voiceURI;
-      if (chosenURI) {
-        const chosen = voices.find((v) => v.voiceURI === chosenURI);
-        const prefix = bcp47.split("-")[0].toLowerCase();
-        if (chosen && chosen.lang.toLowerCase().startsWith(prefix)) return chosen;
-      }
-      const exact = voices.find((v) => v.lang.toLowerCase() === bcp47.toLowerCase());
-      if (exact) return exact;
-      const prefix = bcp47.split("-")[0];
-      return voices.find((v) => v.lang.toLowerCase().startsWith(prefix));
-    },
-    [voices]
+  // One controller per mounted component, created lazily so server rendering
+  // never touches `window`. Held in state rather than a ref because a ref must
+  // not be written during render.
+  const [controller] = useState<SpeechController | null>(() =>
+    speechSupported() ? new SpeechController(createBrowserEngine(), { onState: setState }) : null
   );
+
+  // One teardown for the life of the component: anything still speaking is
+  // cancelled and, crucially, its waiting caller is released.
+  useEffect(() => () => controller?.dispose(), [controller]);
+
+  // The avatar's mouth follows the state rather than being driven by its own
+  // timer alongside it, so it cannot be left flapping after narration stops.
+  useEffect(() => {
+    if (state !== "speaking") return;
+    const timer = setInterval(() => setMouthOpen((open) => !open), MOUTH_FLAP_MS);
+    // Closing the mouth belongs in the cleanup, not in the effect body: it
+    // runs exactly when speaking stops, and React forbids a synchronous
+    // setState while an effect is running.
+    return () => {
+      clearInterval(timer);
+      setMouthOpen(false);
+    };
+  }, [state]);
+
+  const pickVoiceURI = useCallback((bcp47: string): string | undefined => {
+    // Read live rather than from render state, so `speak` keeps a stable
+    // identity as the browser's voice list arrives.
+    const available = availableVoices();
+    // An explicit choice wins, but only while it can still speak the lesson's
+    // language — a learner who picked a French voice and then switched the
+    // lesson to Hindi should get a Hindi voice, not French-accented Hindi.
+    const prefix = bcp47.split("-")[0].toLowerCase();
+    const chosenURI = prefsRef.current.voiceURI;
+    if (chosenURI) {
+      const chosen = available.find((v) => v.voiceURI === chosenURI);
+      if (chosen && chosen.lang.toLowerCase().startsWith(prefix)) return chosen.voiceURI;
+    }
+    const exact = available.find((v) => v.lang.toLowerCase() === bcp47.toLowerCase());
+    if (exact) return exact.voiceURI;
+    return available.find((v) => v.lang.toLowerCase().startsWith(prefix))?.voiceURI;
+  }, []);
 
   /** Voices that can speak the given teaching language, for the picker UI. */
   const voicesForLanguage = useCallback(
@@ -122,110 +156,35 @@ export function useSpeech(prefs: VoicePrefs = DEFAULT_VOICE_PREFS) {
     [voices]
   );
 
-  const stop = useCallback(() => {
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-    if (mouthTimerRef.current) clearInterval(mouthTimerRef.current);
-    // Also drop the pending watchdog — otherwise it fires minutes later and
-    // resolves an utterance nobody is waiting on any more (and, on unmount,
-    // touches state after teardown).
-    if (watchdogRef.current) clearTimeout(watchdogRef.current);
-    finishRef.current = null;
-    setMouthOpen(false);
-    setState("idle");
-  }, []);
-
   const speak = useCallback(
-    (text: string, language: string): Promise<void> => {
-      return new Promise((resolve) => {
-        if (typeof window === "undefined" || !window.speechSynthesis) {
-          resolve();
-          return;
-        }
-        window.speechSynthesis.cancel();
-        const bcp47 = languageToBCP47(language);
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = bcp47;
-        const voice = pickVoice(bcp47);
-        if (voice) utterance.voice = voice;
-        const { rate, pitch, volume } = prefsRef.current;
-        utterance.rate = rate;
-        utterance.pitch = pitch;
-        utterance.volume = volume;
-
-        let settled = false;
-        const finish = () => {
-          if (settled) return;
-          settled = true;
-          if (watchdogRef.current) clearTimeout(watchdogRef.current);
-          finishRef.current = null;
-          if (mouthTimerRef.current) clearInterval(mouthTimerRef.current);
-          setMouthOpen(false);
-          setState("idle");
-          resolve();
-        };
-        finishRef.current = finish;
-        // Some browsers/environments (headless, restricted permissions, no
-        // TTS voices installed) never fire onstart/onend/onerror at all.
-        // Without a watchdog, the lesson would hang forever waiting on
-        // narration that will never "finish". Cap the wait at a generous
-        // estimate of spoken duration so the lesson always keeps moving.
-        // Scaled by rate: at 0.5x the same sentence takes twice as long, and a
-        // watchdog that ignored that would cut slow narration off mid-word.
-        const estimatedMs = Math.min(
-          SPEECH_WATCHDOG_MAX_MS,
-          Math.max(SPEECH_WATCHDOG_MIN_MS, (text.length * SPEECH_MS_PER_CHAR) / Math.max(0.5, rate))
-        );
-        watchdogRef.current = setTimeout(finish, estimatedMs);
-
-        utterance.onstart = () => {
-          setState("speaking");
-          mouthTimerRef.current = setInterval(() => {
-            setMouthOpen((m) => !m);
-          }, MOUTH_FLAP_MS);
-        };
-        utterance.onend = finish;
-        utterance.onerror = finish;
-
-        utteranceRef.current = utterance;
-        window.speechSynthesis.speak(utterance);
-      });
+    (text: string, language: string, signal?: AbortSignal): Promise<SpeechOutcome> => {
+      if (!controller) return Promise.resolve<SpeechOutcome>("unsupported");
+      const bcp47 = languageToBCP47(language);
+      const { rate, pitch, volume } = prefsRef.current;
+      return controller.speak(
+        {
+          text,
+          lang: bcp47,
+          voiceURI: pickVoiceURI(bcp47),
+          rate,
+          pitch,
+          volume,
+          // Scaled by rate: at 0.5x the same sentence takes twice as long, and
+          // a watchdog that ignored that would cut slow narration off mid-word.
+          watchdogMs: Math.min(
+            SPEECH_WATCHDOG_MAX_MS,
+            Math.max(SPEECH_WATCHDOG_MIN_MS, (text.length * SPEECH_MS_PER_CHAR) / Math.max(0.5, rate))
+          ),
+        },
+        signal
+      );
     },
-    [pickVoice]
+    [controller, pickVoiceURI]
   );
 
-  const pause = useCallback(() => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    if (state !== "speaking") return;
-    window.speechSynthesis.pause();
-    if (mouthTimerRef.current) clearInterval(mouthTimerRef.current);
-    setMouthOpen(false);
-    setState("paused");
-  }, [state]);
-
-  const resume = useCallback(() => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    if (state !== "paused") return;
-    window.speechSynthesis.resume();
-    mouthTimerRef.current = setInterval(() => {
-      setMouthOpen((m) => !m);
-    }, MOUTH_FLAP_MS);
-    setState("speaking");
-    // The original watchdog may have already elapsed while paused; give the
-    // resumed speech a fresh, generous safety window rather than none at all.
-    if (watchdogRef.current) clearTimeout(watchdogRef.current);
-    if (finishRef.current) {
-      watchdogRef.current = setTimeout(finishRef.current, SPEECH_RESUME_WATCHDOG_MS);
-    }
-  }, [state]);
-
-  useEffect(() => {
-    return () => {
-      stop();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const stop = useCallback(() => controller?.stop(), [controller]);
+  const pause = useCallback(() => controller?.pause(), [controller]);
+  const resume = useCallback(() => controller?.resume(), [controller]);
 
   return {
     speak,
@@ -237,6 +196,7 @@ export function useSpeech(prefs: VoicePrefs = DEFAULT_VOICE_PREFS) {
     voices,
     voicesForLanguage,
     voicesReady: voices.length > 0,
-    canNarrate: (language: string) => hasVoiceFor(language, voices),
+    /** False when this device has no voice for the language — offer manual progress. */
+    canNarrate: (language: string) => speechSupported() && hasVoiceFor(language, voices),
   };
 }

@@ -165,7 +165,12 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
       .filter(Boolean)
       .join(" ");
     addMessage("ai", sec.narration + (sec.example ? `\n\nExample: ${sec.example}` : ""));
-    speak(textToSpeak, languageRef.current).then(() => {
+    speak(textToSpeak, languageRef.current).then((outcome) => {
+      // H9: narration now reports *why* it finished. Only a real ending
+      // advances the lesson — cancelling (skip, pause-then-leave, a voice
+      // preview, unmount) used to be indistinguishable from finishing, which
+      // is how a section could be skipped without being taught.
+      if (outcome === "cancelled") return;
       if (cancelled || handledRef.current) return;
       handledRef.current = true;
       if (sec.checkpoint) {
