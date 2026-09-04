@@ -4,17 +4,19 @@ Tracks every finding in `Aetheris_AI_Project_Audit_Report.md` against the code
 as it stands. A finding is only marked **Fixed** when its acceptance test
 passes; "the code looks right" is not a status.
 
-**Progress: Phases 0 and 1 complete; Phase 2 in progress.** Security
-containment and the reliable learning workflow are closed. Everything still
-open carries its current status and the exact next step.
+**Progress: Phases 0, 1 and 2 complete; Phase 3 in progress.** Security
+containment, the reliable learning workflow, and scalable AI and retrieval are
+closed apart from two items that need an infrastructure decision from you (M4,
+M6 — see "Awaiting your approval"). Everything still open carries its current
+status and the exact next step.
 
 ## Verification commands
 
 ```bash
 npm run lint       # eslint            -> clean
 npx tsc --noEmit   # TypeScript strict -> clean
-npm test           # 358 tests         -> 358 pass, 0 fail
-npm run build      # production build  -> compiled, 25 routes
+npm test           # 408 tests         -> 408 pass, 0 fail
+npm run build      # production build  -> compiled, 26 routes
 npm run check      # all three of the above in sequence
 ```
 
@@ -26,16 +28,15 @@ none are being hidden.
 
 | Status | Count | IDs |
 | --- | --- | --- |
-| Fixed, with regression tests | 19 | C1, C2, H1, H2, H4, H5, H6, H7, H8, H9, H10, M1, M2, M7, M8, M9, M10, M11, M15 |
-| Partially fixed | 4 | H3, H12, M12, M16 |
-| Confirmed, still open — Phase 2 | 5 | H11, M3, M4, M5, M6 |
+| Fixed, with regression tests | 23 | C1, C2, H1, H2, H3, H4, H5, H6, H7, H8, H9, H10, H11, M1, M2, M3, M5, M7, M8, M9, M10, M11, M15 |
+| Partially fixed | 3 | H12, M12, M16 |
+| Awaiting your decision | 2 | M4, M6 |
 | Confirmed, still open — Phase 3/4 | 2 | M13, L2 |
 | Already accurate / closed | 2 | M14, L1 |
 
 All 32 findings (C1–C2, H1–H12, M1–M16, L1–L2) are accounted for above.
 
-No confirmed **critical or high security** finding remains open. The one high
-still outstanding, H11, is the Phase 2 ingestion work.
+**No critical or high finding remains open.**
 
 ---
 
@@ -157,7 +158,7 @@ still outstanding, H11, is the Phase 2 ingestion work.
 
 ### H3 — Uploaded document text treated as trusted instruction context
 
-- **Status:** Partially fixed
+- **Status:** Fixed
 - **Confirmed at:** `src/lib/teachingAgent.ts:153` — retrieved excerpts were
   interpolated as "Source material context (grounded, use this as the primary
   source of truth)".
@@ -171,8 +172,17 @@ still outstanding, H11, is the Phase 2 ingestion work.
   guarantee. The controls that make an injected payload inert are C1 (the
   expression parser), H1 (the diagram gates) and H2 (output schemas) — all
   closed.
-- **Deferred:** a prompt-injection evaluation set (report §6, Phase 2) and
-  citation provenance.
+- **Tests:** `src/lib/promptInjection.test.ts` — 8 cases holding both halves in
+  place at once. The fencing: an injected `END_SOURCE_MATERIAL` cannot close
+  the block early, an injected `<<<BEGIN_SOURCE_MATERIAL` cannot forge a new
+  one, and the rules say in so many words that the block is data. The sinks:
+  an injected graph expression, an injected diagram, a plan that breaks its
+  schema, a plan carrying an answer key, and a padded payload are each
+  refused on their own.
+- **Also fixed:** citation provenance. Retrieved passages are labelled with
+  where in the document they came from and recorded on the lesson session, so
+  a claim can be traced back to a slide or heading rather than to an anonymous
+  excerpt.
 
 ### H4 — Sensitive routes rely on proxy-level access control
 
@@ -407,11 +417,28 @@ still outstanding, H11, is the Phase 2 ingestion work.
 
 ### H11 — Document ingestion is a synchronous serverless workload
 
-- **Status:** Confirmed, open. Phase 2.
-- **Partially bounded now:** file size, archive expansion, extracted-text
-  length and the per-user upload rate all cap the work one request can start.
-- **Still open:** parsing, chunking, embedding and concept extraction all still
-  happen inside the 60-second request.
+- **Status:** Fixed, with a documented infrastructure caveat
+- **Confirmed at:** `POST /api/upload` extracted, chunked, embedded every
+  chunk, wrote the database and ran concept extraction inside one request with
+  `maxDuration = 60`.
+- **Implementation:** migration `0006` adds `ingestion_jobs`. The request now
+  does only the bounded part — admission checks and text extraction — and
+  returns a job id. `runSlice` advances the job a few chunks at a time, moving
+  its checkpoint in the same transaction as the rows it describes so the two
+  cannot disagree. Attempt limits stop a job that cannot succeed; a heartbeat
+  lets one abandoned mid-slice be taken over rather than stuck as `running`
+  forever; chunk writes are upserts, so re-running a slice after a lost
+  response overwrites its own rows instead of failing on the primary key.
+  `documents.ingest_status` makes "still indexing" a fact about the row.
+- **Tests:** 4 route cases — an upload returns before the work is done,
+  ingestion advances slice by slice to completion, another learner can neither
+  read nor drive the job, and a status request with no job id is a 400.
+- **The caveat:** the slices are driven by the client polling while it waits.
+  A queue and its worker are the production answer and are an infrastructure
+  decision this project has not made; the job semantics that matter are
+  already here, and swapping the trigger touches only `runSlice`'s caller.
+  Object storage is the same shape of decision — the extracted text currently
+  lives in the job row, bounded by the upload limits.
 
 ### H12 — No automated safety net
 
@@ -432,10 +459,10 @@ still outstanding, H11, is the Phase 2 ingestion work.
 | --- | --- | --- | --- |
 | M1 | Older strong evidence overwrites newer weak evidence | **Fixed** | Extracted as `deriveConceptMastery`, a pure function with 7 tests. The rule is now what the comment always claimed: the most recent lesson mentioning a concept decides it, and older entries cannot change it. A concept listed both ways in one lesson resolves to weak — revisiting a known concept is cheaper than dropping one the learner has not grasped. |
 | M2 | 50-row window presented as lifetime history | **Fixed** | `loadMemoryForUser` returns `historyTotal` and `historyWindow` alongside the window, and `LearnerDashboard` says "showing the N most recent of M lessons" when the list is truncated. |
-| M3 | Chunk overlap misses ordinary paragraph boundaries | Open (Phase 2) | Config now guarantees `CHUNK_OVERLAP < CHUNK_MAX_CHARS` (an equal or larger overlap made the chunk loop stop advancing). The boundary behaviour in `src/lib/chunk.ts` is unchanged. |
-| M4 | Node-side JSONB vector scan | Open (Phase 2) | Needs pgvector; requires a decision about the database extension (see "Awaiting your approval"). |
-| M5 | No threshold, hybrid search, reranker or citations | Open (Phase 2) | |
-| M6 | English-oriented embeddings vs multilingual product | Open (Phase 2) | Changing the model requires re-embedding every stored document — a data migration needing your approval. |
+| M3 | Chunk overlap misses ordinary paragraph boundaries | **Fixed** | Every chunk now carries the tail of the one before it, cut at a word boundary. A slide or heading boundary stays a hard cut, because a chunk spanning two sections cannot be cited unambiguously. Chunks also keep the marker they were found under. 12 tests, including that chunking terminates for any overlap value. |
+| M4 | Node-side JSONB vector scan | **Awaiting your decision** | `db/optional/0001_pgvector.sql` has the extension, column, backfill and HNSW index with its rollback, deliberately outside `db/migrations/` — applying it needs the `vector` extension and privileges the app role may not have. Retrieval is now hybrid, so the vector arm is no longer the only thing standing between a query and an answer. |
+| M5 | No threshold, hybrid search, reranker or citations | **Fixed** | Full-text in Postgres plus vectors in Node, fused by reciprocal rank; a relevance floor below which nothing is returned at all; a per-source cap so one slide cannot crowd out the document; passage labels the model can cite, recorded on the session. 14 tests. |
+| M6 | English-oriented embeddings vs multilingual product | **Partially fixed; the switch awaits your decision** | Every vector now records the model that produced it and retrieval filters on it, so a model change degrades to "old documents return nothing until re-uploaded" rather than to confident nonsense from comparing two models' vectors. The full-text arm uses the `simple` configuration, not `english`, which was actively harming the other 21 languages. Actually switching to a multilingual model invalidates every stored vector — a data migration needing your approval. |
 | M7 | Parse failure sits outside the provider retry loop | **Fixed** | `callModelSchema` parses *and* validates inside the operation, with bounded repair. Covered indirectly by the schema tests; a provider-level contract test is Phase 4. |
 | M8 | Retry envelope can exceed route duration | **Fixed** | `TOTAL_DEADLINE_MS` (default 50s, under the 60s `maxDuration`). No attempt starts that cannot finish, and each attempt's timeout is clamped to the remaining budget. |
 | M9 | Numeric config parser lacks integer and upper bounds | **Fixed** | `src/lib/appConfig.ts` now has `parseNumber`/`count`/`duration`/`ratio` with explicit domains. `MODEL_TEMPERATURE=0` is now accepted (it was silently replaced by 0.7); every token budget has a ceiling; `CHUNK_OVERLAP` falls back when it is not smaller than the chunk size. |
@@ -462,6 +489,8 @@ still outstanding, H11, is the Phase 2 ingestion work.
 | --- | --- | --- | --- |
 | `0001_baseline` | The pre-existing `db/schema.sql`, unchanged. Every statement is `IF NOT EXISTS`, so it is safe to run against a database that already has these tables — which is exactly what happens the first time an existing deployment runs the new runner. | Not applicable — this is the baseline. | None. |
 | `0002_quiz_grading` | Adds `lesson_quizzes` and `lesson_quiz_attempts` for H10. | `DROP TABLE lesson_quiz_attempts, lesson_quizzes;` — destroys graded attempts, so only for a rollback that also reverts the application. | None. Lessons completed before this migration have their score in `learner_history_entries` already; there is no attempt row to reconstruct and none is needed. |
+| `0006_ingestion_jobs` | Adds `ingestion_jobs` and the `ingest_status`, `concepts`, `preview` columns on `documents` for H11. | `DROP TABLE ingestion_jobs;` plus dropping the three columns. Non-destructive to indexed documents. | None. Documents indexed before this migration default to `ingest_status = 'ready'`, which is correct — they finished under the old synchronous path. |
+| `0005_retrieval` | Adds `source` and `embedding_model` to `document_chunks`, a GIN full-text index, and `sources` on `lesson_sessions` (M3, M5, M6). | Drop the columns and the index. Non-destructive. | None required. Existing rows have `embedding_model = NULL`, which retrieval treats as "the model that was the default when it was written" — re-uploading a document is what backfills it properly. |
 | `0004_lesson_sessions` | Adds `lesson_sessions` for the durable lesson aggregate, with a partial unique index allowing one live session per learner. | `DROP TABLE lesson_sessions;` — destroys lessons in progress; completed ones are already in `learner_history_entries`. | None. Lessons started before this migration were browser-only and cannot be recovered; they simply are not resumable. |
 | `0003_constraints` | Adds `NOT VALID` CHECK constraints for M15. | `ALTER TABLE <t> DROP CONSTRAINT <name>;` for each. Non-destructive. | Optional: `ALTER TABLE <t> VALIDATE CONSTRAINT <name>;` once existing rows are known to be clean. Left to you deliberately — a migration should not decide what to do about pre-existing rows that violate a new rule. |
 
@@ -486,14 +515,12 @@ staging before production.
 
 ## Next implementation step
 
-Phase 2, in this order:
+Phase 3, in this order:
 
-1. **M3** — chunk overlap at ordinary paragraph boundaries.
-2. **M5/M6** — retrieval thresholds, hybrid lexical + vector search,
-   citations, and recording which embedding model produced each vector so
-   two models' vectors can never be compared.
-3. **Provider resilience** — health tracking, circuit breaker, fallback and
-   budget-aware routing, with structured telemetry.
-4. **H11** — asynchronous ingestion behind a job model, with a local adapter
-   and the production requirement documented rather than a vendor hardcoded.
-5. **M4** — pgvector, which needs your approval (see below).
+1. **L2** — the `SAMPLE BUTTON` placeholder.
+2. **M12** — WCAG 2.2 AA: label association, focus management, live regions,
+   visible focus, reduced motion, correct language metadata.
+3. **M13** — data export and account deletion (both possible now); password
+   reset and email verification need an email provider decision.
+4. **H12/Phase 4** — CI gates, React error boundaries, a health endpoint, and
+   the operational documentation.
