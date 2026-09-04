@@ -1,17 +1,41 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { LessonPlan, QuizQuestion } from "@/lib/types";
+import type { LessonPlan } from "@/lib/types";
+import type { GradedAnswer, LearnerQuestion } from "@/lib/grading";
+import { apiRequest, errorMessage } from "@/lib/http";
 import Icon from "./Icon";
+
+export interface QuizOutcome {
+  quizId: string;
+  scorePercent: number;
+  results: GradedAnswer[];
+}
 
 interface Props {
   lessonPlan: LessonPlan;
   language: string;
-  onFinished: (results: { question: QuizQuestion; studentAnswer: string; correct: boolean }[]) => void;
+  onFinished: (outcome: QuizOutcome) => void;
 }
 
+interface GeneratedQuiz {
+  quizId: string;
+  questions: LearnerQuestion[];
+}
+
+/**
+ * The end-of-lesson assessment.
+ *
+ * H10: this component used to receive the answer key along with the questions
+ * and decide the marks itself — multiple choice by string equality, short
+ * answers by calling the evaluator with the key in the request body. It now
+ * only collects answers. The quiz id and the option ids come from the server,
+ * the marks come back from the server, and nothing here can assert that an
+ * answer was correct.
+ */
 export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
-  const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
+  const [quiz, setQuiz] = useState<GeneratedQuiz | null>(null);
+  /** questionId -> chosen option id (mcq) or typed text (short). */
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [grading, setGrading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -19,86 +43,65 @@ export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
   const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/lesson/quiz", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ lessonPlan, language }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
-        if (!cancelled) {
-          setQuestions(data);
-          setError(null);
-        }
-      } catch (err) {
-        if (!cancelled) setError((err as Error).message);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    const controller = new AbortController();
+    apiRequest<GeneratedQuiz>("/api/lesson/quiz", {
+      method: "POST",
+      body: { lessonPlan, language },
+      signal: controller.signal,
+    })
+      .then((data) => {
+        setQuiz(data);
+        setError(null);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setError(errorMessage(err));
+      });
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadAttempt]);
 
   async function handleSubmit() {
-    if (!questions) return;
+    if (!quiz || grading) return;
     setGrading(true);
     setGradingError(null);
-    // Short-answer questions each need their own LLM round-trip. Grading them
-    // in parallel keeps total wait at roughly one call instead of the sum of
-    // all of them (a 4-short-answer quiz went from ~40s to ~10s).
-    const results = await Promise.all(
-      questions.map(async (q) => {
-        const studentAnswer = answers[q.id] || "";
-        if (q.type === "mcq") {
-          const correct =
-            studentAnswer.trim().toLowerCase() === (q.correctAnswer || "").trim().toLowerCase();
-          return { question: q, studentAnswer, correct };
-        }
-        try {
-          const res = await fetch("/api/lesson/evaluate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              question: { id: q.id, type: "short", question: q.question, correctAnswer: q.correctAnswer, conceptTag: q.conceptTag },
-              studentAnswer,
-              sectionContext: lessonPlan.topic,
-              language,
-            }),
-          });
-          // Without this check a 500 would parse as `{error: "..."}`, whose
-          // `correct` is undefined — silently marking the answer wrong.
-          if (!res.ok) return { question: q, studentAnswer, correct: false, graderFailed: true };
-          const evalResult = await res.json();
-          return { question: q, studentAnswer, correct: !!evalResult.correct };
-        } catch {
-          return { question: q, studentAnswer, correct: false, graderFailed: true };
-        }
-      })
-    );
-    setGrading(false);
-    if (results.some((r) => "graderFailed" in r && r.graderFailed)) {
+    try {
+      // One request grades the whole quiz. Re-submitting the same quiz id
+      // returns the stored attempt rather than grading it twice, so a double
+      // click or a retry cannot produce two different marks.
+      const outcome = await apiRequest<QuizOutcome>("/api/lesson/quiz/grade", {
+        method: "POST",
+        body: {
+          quizId: quiz.quizId,
+          answers: quiz.questions.map((question) =>
+            question.type === "mcq"
+              ? { questionId: question.id, optionId: answers[question.id] }
+              : { questionId: question.id, text: answers[question.id] ?? "" }
+          ),
+        },
+      });
+      onFinished(outcome);
+    } catch (err) {
       // Kept separate from `error` (which swaps in the reload-the-quiz screen)
       // so a transient grader hiccup doesn't discard everything they typed.
-      setGradingError("Some answers couldn't be graded — the AI grader was unreachable. Your answers are safe; try submitting again.");
-      return;
+      setGradingError(
+        `${errorMessage(err)} Your answers are safe — submitting again will not double-count them.`
+      );
+    } finally {
+      setGrading(false);
     }
-    onFinished(results.map(({ question, studentAnswer, correct }) => ({ question, studentAnswer, correct })));
   }
 
   if (error)
     return (
       <div className="max-w-2xl mx-auto mt-10 space-y-4">
         <div className="text-sm text-error bg-error-container/20 border border-error/30 rounded-xl p-4">
-          Could not generate the assessment: {error}. This is usually a temporary hiccup from the AI
+          Could not generate the assessment: {error} This is usually a temporary hiccup from the AI
           model — your lesson progress is safe, just try again.
         </div>
         <button
           onClick={() => {
-            setQuestions(null);
+            setQuiz(null);
             setError(null);
             setLoadAttempt((n) => n + 1);
           }}
@@ -109,7 +112,8 @@ export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
         </button>
       </div>
     );
-  if (!questions)
+
+  if (!quiz)
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] text-center space-y-4">
         <div className="relative w-12 h-12">
@@ -120,7 +124,7 @@ export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
       </div>
     );
 
-  const allAnswered = questions.every((q) => (answers[q.id] || "").trim().length > 0);
+  const allAnswered = quiz.questions.every((q) => (answers[q.id] || "").trim().length > 0);
 
   return (
     <div className="w-full max-w-2xl mx-auto space-y-5 py-4">
@@ -128,41 +132,53 @@ export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
         <Icon name="quiz" className="text-primary-fixed-dim" filled />
         Assessment: {lessonPlan.topic}
       </h2>
-      {questions.map((q, i) => (
-        <div key={q.id} className="glass-panel rounded-xl p-5 space-y-3">
-          <div className="font-body-lg text-body-lg text-on-surface">{i + 1}. {q.question}</div>
+      {quiz.questions.map((q, i) => (
+        <fieldset key={q.id} className="glass-panel rounded-xl p-5 space-y-3">
+          <legend className="font-body-lg text-body-lg text-on-surface">
+            {i + 1}. {q.question}
+          </legend>
           {q.type === "mcq" && q.options ? (
             <div className="grid gap-2">
-              {q.options.map((opt) => (
+              {q.options.map((option) => (
                 <button
-                  key={opt}
-                  onClick={() => setAnswers((a) => ({ ...a, [q.id]: opt }))}
+                  key={option.id}
+                  type="button"
+                  // The chosen option is recorded by id, which is what the
+                  // server grades against — the text is only ever displayed.
+                  onClick={() => setAnswers((a) => ({ ...a, [q.id]: option.id }))}
+                  aria-pressed={answers[q.id] === option.id}
                   className={`text-left text-sm px-4 py-2.5 rounded-xl glass-bubble ${
-                    answers[q.id] === opt ? "active" : ""
+                    answers[q.id] === option.id ? "active" : ""
                   }`}
                 >
-                  {opt}
+                  {option.text}
                 </button>
               ))}
             </div>
           ) : (
-            <textarea
-              className="w-full rounded-xl border border-white/10 bg-surface-container/50 px-4 py-3 text-sm text-on-surface placeholder-outline-variant focus:outline-none focus:border-primary/40"
-              rows={2}
-              value={answers[q.id] || ""}
-              onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
-            />
+            <>
+              <label htmlFor={`answer-${q.id}`} className="sr-only">
+                Your answer to question {i + 1}
+              </label>
+              <textarea
+                id={`answer-${q.id}`}
+                className="w-full rounded-xl border border-white/10 bg-surface-container/50 px-4 py-3 text-sm text-on-surface placeholder-outline-variant focus:outline-none focus:border-primary/40"
+                rows={2}
+                value={answers[q.id] || ""}
+                onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
+              />
+            </>
           )}
-        </div>
+        </fieldset>
       ))}
       {gradingError && (
-        <div className="text-sm text-error bg-error-container/20 border border-error/30 rounded-xl p-3">
+        <div role="alert" className="text-sm text-error bg-error-container/20 border border-error/30 rounded-xl p-3">
           {gradingError}
         </div>
       )}
       {!allAnswered && (
         <p className="text-xs text-on-surface-variant text-center">
-          Answer all {questions.length} questions to submit.
+          Answer all {quiz.questions.length} questions to submit.
         </p>
       )}
       <button

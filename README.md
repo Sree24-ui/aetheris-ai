@@ -127,7 +127,7 @@ npm install
 cp .env.local.example .env.local
 # edit .env.local: set GROQ_API_KEY (or GEMINI_API_KEY with LLM_PROVIDER=gemini),
 # plus DATABASE_URL and AUTH_SECRET (openssl rand -base64 32)
-npm run migrate    # creates the accounts, history and document tables
+npm run migrate    # applies db/migrations/ (accounts, history, documents, quizzes)
 npm run dev
 # open http://localhost:3000
 ```
@@ -163,7 +163,7 @@ npm run build
 npm start
 ```
 
-Set `GROQ_API_KEY` (or `GEMINI_API_KEY` with `LLM_PROVIDER=gemini`), `DATABASE_URL` and `AUTH_SECRET` as environment variables on the host, and run `npm run migrate` once against that database. Uploaded documents and their chunk embeddings are stored in Postgres (`documents` / `document_chunks`), so uploads survive across serverless instances and deployments.
+Set `GROQ_API_KEY` (or `GEMINI_API_KEY` with `LLM_PROVIDER=gemini`), `DATABASE_URL` and `AUTH_SECRET` as environment variables on the host, and run `npm run migrate` against that database on every deploy that adds a migration (`npm run migrate -- --status` shows what is applied and what is pending). Migrations live in `db/migrations/` as immutable numbered files, each applied once inside its own transaction and recorded in `schema_migrations`; the baseline is idempotent, so an existing database simply records it and moves on. Uploaded documents and their chunk embeddings are stored in Postgres (`documents` / `document_chunks`), so uploads survive across serverless instances and deployments.
 
 ## Security Model
 
@@ -181,6 +181,7 @@ where it is rendered.
 | Route guards | `src/lib/apiGuard.ts`, `src/lib/security/http.ts` | Each handler authenticates for itself, derives the user id from the session (never from the body), checks ownership for document ids, and enforces body-size, rate and daily model-cost limits. |
 | Upload admission control | `src/lib/security/uploads.ts` | Size cap, magic-number check against the claimed extension, and archive entry-count / expanded-size / compression-ratio limits read from the zip directory before anything is decompressed. |
 | Verified database TLS | `db/ssl.mjs` | Remote Postgres connections verify the server certificate. The insecure escape hatch is refused when `NODE_ENV=production`. |
+| Server-owned grading | `src/lib/grading.ts`, `src/app/api/lesson/quiz/*` | The assessment's answer key never leaves the server. The browser receives questions with stable option ids and no key, submits option ids, and receives marks decided server-side; the report's score comes from the stored attempt, not from the model or the client. |
 
 Two consequences worth knowing about:
 

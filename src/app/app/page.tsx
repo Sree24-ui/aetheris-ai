@@ -4,7 +4,6 @@ import { useState } from "react";
 import type {
   LearnerProfile,
   LessonPlan,
-  QuizQuestion,
   LearningReport,
   LearningPath,
   DocumentSummary,
@@ -14,14 +13,14 @@ import AppShell from "@/components/AppShell";
 import HomeDashboard from "@/components/HomeDashboard";
 import ConfigForm from "@/components/ConfigForm";
 import TeachingSession from "@/components/TeachingSession";
-import QuizPanel from "@/components/QuizPanel";
+import QuizPanel, { type QuizOutcome } from "@/components/QuizPanel";
 import ReportPanel from "@/components/ReportPanel";
 import LearningPathPanel from "@/components/LearningPathPanel";
 import LearnerDashboard from "@/components/LearnerDashboard";
 import ProfileDashboard from "@/components/ProfileDashboard";
 import SettingsDashboard from "@/components/SettingsDashboard";
 import { addHistoryEntry, setCurrentPath, advancePath } from "@/lib/memory";
-import { errorMessage, isSessionExpired } from "@/lib/http";
+import { apiRequest, errorMessage, isSessionExpired } from "@/lib/http";
 
 type Stage = "home" | "config" | "planning" | "teaching" | "quiz" | "report" | "path" | "dashboard" | "profile" | "settings";
 
@@ -39,9 +38,8 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [pendingTopic, setPendingTopic] = useState<string | undefined>(undefined);
   const [pendingDoc, setPendingDoc] = useState<DocumentSummary | null>(null);
-  const [pendingQuizResults, setPendingQuizResults] = useState<
-    { question: QuizQuestion; studentAnswer: string; correct: boolean }[] | null
-  >(null);
+  /** The graded attempt, kept so the retry button can re-run the report step. */
+  const [pendingQuizOutcome, setPendingQuizOutcome] = useState<QuizOutcome | null>(null);
   /**
    * H8: which learning-path step the lesson in progress belongs to, or null
    * when it is a standalone lesson. Completion used to advance whatever path
@@ -126,44 +124,40 @@ export default function Home() {
     setStage("quiz");
   }
 
-  async function handleQuizFinished(
-    results: { question: QuizQuestion; studentAnswer: string; correct: boolean }[]
-  ) {
+  async function handleQuizFinished(outcome: QuizOutcome) {
     if (!lessonPlan) return;
     setError(null);
-    setPendingQuizResults(results);
+    setPendingQuizOutcome(outcome);
     // Reused across retries so a repeated save is a replay, not a duplicate.
     const historyId = pendingHistoryId ?? crypto.randomUUID();
     setPendingHistoryId(historyId);
     try {
-      const res = await fetch("/api/lesson/report", {
+      // H10: the report is built from the attempt the server graded and
+      // stored. Only its id travels — the marks are not the browser's to send.
+      const reportData = await apiRequest<LearningReport>("/api/lesson/report", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: {
           lessonPlan,
-          quizResults: results,
+          quizId: outcome.quizId,
           checkpointResults,
           language: lessonPlan.language,
-        }),
+        },
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to generate the learning report");
-      const reportData: LearningReport = data;
       setReport(reportData);
-      setPendingQuizResults(null);
       await addHistoryEntry({
         id: historyId,
         topic: lessonPlan.topic,
         date: new Date().toISOString(),
         language: lessonPlan.language,
         subject: lessonPlan.subject,
-        scorePercent: reportData.scorePercent,
+        // The server's score, not the model's restatement of it.
+        scorePercent: outcome.scorePercent,
         strongAreas: reportData.strongAreas,
         weakAreas: reportData.weakAreas,
         recommendation: reportData.recommendation,
         transcript,
-        quiz: results.map((r) => ({
-          question: r.question.question,
+        quiz: outcome.results.map((r) => ({
+          question: r.question,
           studentAnswer: r.studentAnswer,
           correct: r.correct,
         })),
@@ -176,6 +170,7 @@ export default function Home() {
         setActivePathStep(null);
       }
       setPendingHistoryId(null);
+      setPendingQuizOutcome(null);
       setStage("report");
     } catch (err) {
       // The report itself may have succeeded; the retry button re-runs this
@@ -204,7 +199,7 @@ export default function Home() {
     setPendingDoc(null);
     setActivePathStep(null);
     setPendingHistoryId(null);
-    setPendingQuizResults(null);
+    setPendingQuizOutcome(null);
   }
 
   async function handleSelectPathStep(stepTitle: string, index: number) {
@@ -242,9 +237,9 @@ export default function Home() {
       {error && (
         <div className="max-w-2xl mx-auto mt-6 text-sm text-error bg-error-container/20 border border-error/30 rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap">
           <span>{error}</span>
-          {pendingQuizResults && (
+          {pendingQuizOutcome && (
             <button
-              onClick={() => handleQuizFinished(pendingQuizResults)}
+              onClick={() => handleQuizFinished(pendingQuizOutcome)}
               className="px-3 py-1.5 rounded-full bg-error-container/40 border border-error/40 text-xs font-medium whitespace-nowrap"
             >
               Retry

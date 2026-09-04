@@ -155,6 +155,17 @@ export const conceptsSchema = z.object({
   concepts: z.array(z.string().min(1).max(120)).max(20).default([]),
 });
 
+/**
+ * A rubric grade for one short answer. Deliberately narrow: the grader is
+ * asked for a verdict and a sentence, not for anything that could redirect
+ * the lesson or leak the reference answer verbatim.
+ */
+export const rubricGradeSchema = z.object({
+  correct: z.boolean(),
+  partialCredit: z.number().min(0).max(1).catch(0),
+  feedback: z.string().max(1200).default(""),
+});
+
 export const chatAnswerSchema = z.object({
   answer: z.string().min(1).max(8000),
   suggestedFollowUps: z.array(z.string().min(1).max(400)).max(5).default([]),

@@ -35,6 +35,12 @@ class StubHistoryIdConflict extends Error {}
 class StubNoActivePath extends Error {}
 const historyRows = new Map<string, number>();
 const paths = new Map<number, { steps: number; index: number }>();
+/** quizId -> { userId, quiz } and quizId -> attempt, for the H10 routes. */
+const quizzes = new Map<string, { userId: number; quiz: Record<string, unknown> }>();
+const attempts = new Map<string, Record<string, unknown>>();
+let shortAnswerGrades = 0;
+/** What the stubbed generator returns; a test sets it before creating a quiz. */
+let quizFixture: unknown[] = [];
 
 before(() => {
   mock.module(lib("auth.ts"), {
@@ -48,14 +54,42 @@ before(() => {
   mock.module(lib("teachingAgent.ts"), {
     namedExports: {
       planLesson: async () => ({ topic: "stub", sections: [] }),
-      generateQuiz: async () => [],
-      generateReport: async () => ({ topic: "stub" }),
+      generateQuiz: async () => quizFixture,
+      // Deliberately claims a score, so a test can prove the stored attempt
+      // overrides it rather than the model deciding the learner's mark.
+      generateReport: async () => ({ topic: "stub", scorePercent: 99 }),
       evaluateAnswer: async () => ({ correct: true }),
       answerQuestion: async () => ({ answer: "stub", suggestedFollowUps: [] }),
       translateSection: async () => ({ id: "s1" }),
       generateLearningPath: async () => ({ topic: "stub", steps: [] }),
       parseInstruction: async () => ({ topic: "stub" }),
       extractConcepts: async () => [],
+      gradeShortAnswer: async () => {
+        shortAnswerGrades += 1;
+        return { correct: true, partialCredit: 1, feedback: "ok" };
+      },
+    },
+  });
+  mock.module(lib("quizStore.ts"), {
+    namedExports: {
+      saveQuiz: async (quiz: { id: string }, userId: number) => {
+        quizzes.set(quiz.id, { userId, quiz: quiz as Record<string, unknown> });
+      },
+      loadQuiz: async (quizId: string, userId: number) => {
+        const row = quizzes.get(quizId);
+        return row && row.userId === userId ? row.quiz : null;
+      },
+      loadAttempt: async (quizId: string, userId: number) => {
+        const row = quizzes.get(quizId);
+        if (!row || row.userId !== userId) return null;
+        return attempts.get(quizId) ?? null;
+      },
+      saveAttempt: async (attempt: { quizId: string }) => {
+        const existing = attempts.get(attempt.quizId);
+        if (existing) return { stored: existing, replayed: true };
+        attempts.set(attempt.quizId, attempt as Record<string, unknown>);
+        return { stored: attempt, replayed: false };
+      },
     },
   });
   mock.module(lib("vectorStore.ts"), {
@@ -107,6 +141,10 @@ beforeEach(async () => {
   session = null;
   historyRows.clear();
   paths.clear();
+  quizzes.clear();
+  attempts.clear();
+  shortAnswerGrades = 0;
+  quizFixture = [];
   const { resetRateLimits } = await import(lib("security/rateLimit.ts"));
   resetRateLimits();
 });
@@ -166,7 +204,16 @@ const matrix: { route: string; method: "GET" | "POST" | "PATCH"; body?: unknown 
     },
   },
   { route: "lesson/quiz", method: "POST", body: { lessonPlan: validPlan } },
-  { route: "lesson/report", method: "POST", body: { lessonPlan: validPlan } },
+  {
+    route: "lesson/quiz/grade",
+    method: "POST",
+    body: { quizId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301", answers: [] },
+  },
+  {
+    route: "lesson/report",
+    method: "POST",
+    body: { lessonPlan: validPlan, quizId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301" },
+  },
   {
     route: "lesson/translate-section",
     method: "POST",
@@ -379,6 +426,136 @@ test("setting a path clamps the index to a real step", async () => {
   );
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true, stepIndex: 0 });
+});
+
+// --- Server-owned assessment (H10) ----------------------------------------
+
+async function createQuiz(): Promise<{ quizId: string; questions: { id: string }[] }> {
+  quizFixture = [
+    {
+      id: "ignored",
+      type: "mcq",
+      question: "2 + 2?",
+      options: ["3", "4"],
+      correctAnswer: "4",
+      conceptTag: "addition",
+    },
+    {
+      id: "ignored",
+      type: "short",
+      question: "Why?",
+      correctAnswer: "Because of the axiom.",
+      conceptTag: "reasons",
+    },
+  ];
+  const { POST } = await loadRoute("lesson/quiz");
+  const response = await POST(post({ lessonPlan: validPlan, language: "English" }));
+  assert.equal(response.status, 200);
+  return response.json();
+}
+
+test("the generated quiz reaches the browser without its answer key", async () => {
+  session = { user: { id: "1" } };
+  const body = await createQuiz();
+  const serialised = JSON.stringify(body);
+  assert.ok(!serialised.includes("correctAnswer"), serialised);
+  assert.ok(!serialised.includes("correctOptionId"), serialised);
+  assert.ok(!serialised.includes("Because of the axiom"), serialised);
+  assert.equal(body.questions.length, 2);
+});
+
+test("grading is decided by the stored key, not by the submission", async () => {
+  session = { user: { id: "1" } };
+  const quiz = await createQuiz();
+  const { POST } = await loadRoute("lesson/quiz/grade");
+
+  const wrong = await POST(
+    post({
+      quizId: quiz.quizId,
+      // The old client posted its own `correct: true`. Anything of that shape
+      // is simply not read: only the option id counts.
+      answers: [{ questionId: "q1", optionId: "o1", correct: true }],
+    })
+  );
+  const body = await wrong.json();
+  assert.equal(wrong.status, 200);
+  assert.equal(body.results[0].correct, false);
+  assert.equal(body.results[0].gradedBy, "deterministic");
+});
+
+test("submitting the same quiz twice returns the stored attempt", async () => {
+  session = { user: { id: "1" } };
+  const quiz = await createQuiz();
+  const { POST } = await loadRoute("lesson/quiz/grade");
+  const answers = [
+    { questionId: "q1", optionId: "o2" },
+    { questionId: "q2", text: "Because of the axiom." },
+  ];
+
+  const first = await (await POST(post({ quizId: quiz.quizId, answers }))).json();
+  assert.equal(first.replayed, false);
+  const gradesAfterFirst = shortAnswerGrades;
+
+  const second = await (await POST(post({ quizId: quiz.quizId, answers }))).json();
+  assert.equal(second.replayed, true);
+  assert.equal(second.scorePercent, first.scorePercent);
+  // The replay must not spend a second set of model calls.
+  assert.equal(shortAnswerGrades, gradesAfterFirst);
+});
+
+test("another learner's quiz cannot be graded or reported on", async () => {
+  session = { user: { id: "1" } };
+  const quiz = await createQuiz();
+
+  session = { user: { id: "2" } };
+  const grade = await (await loadRoute("lesson/quiz/grade")).POST(
+    post({ quizId: quiz.quizId, answers: [] })
+  );
+  assert.equal(grade.status, 404);
+
+  const report = await (await loadRoute("lesson/report")).POST(
+    post({ lessonPlan: validPlan, quizId: quiz.quizId })
+  );
+  assert.equal(report.status, 404);
+});
+
+test("a report cannot be produced before the assessment is graded", async () => {
+  session = { user: { id: "1" } };
+  const quiz = await createQuiz();
+  const response = await (await loadRoute("lesson/report")).POST(
+    post({ lessonPlan: validPlan, quizId: quiz.quizId })
+  );
+  assert.equal(response.status, 404);
+});
+
+test("the reported score comes from the graded attempt, not the model", async () => {
+  session = { user: { id: "1" } };
+  const quiz = await createQuiz();
+  await (await loadRoute("lesson/quiz/grade")).POST(
+    post({ quizId: quiz.quizId, answers: [{ questionId: "q1", optionId: "o1" }] })
+  );
+
+  const response = await (await loadRoute("lesson/report")).POST(
+    post({ lessonPlan: validPlan, quizId: quiz.quizId })
+  );
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  // The stubbed model claims 99; the stored attempt is one wrong MCQ and one
+  // unanswered short question, so nothing was earned.
+  assert.equal(body.scorePercent, 0);
+  assert.ok(body.graderVersion);
+});
+
+test("a report request cannot smuggle its own quiz results", async () => {
+  session = { user: { id: "1" } };
+  const response = await (await loadRoute("lesson/report")).POST(
+    post({
+      lessonPlan: validPlan,
+      quizResults: [{ question: "?", conceptTag: "c", studentAnswer: "a", correct: true }],
+    })
+  );
+  // No quizId at all: the body no longer has a field that could carry marks.
+  assert.equal(response.status, 400);
 });
 
 test("an error response never carries internal detail", async () => {

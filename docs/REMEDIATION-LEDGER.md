@@ -14,8 +14,8 @@ open carries its current status and the exact next step.
 ```bash
 npm run lint       # eslint            -> clean
 npx tsc --noEmit   # TypeScript strict -> clean
-npm test           # 266 tests         -> 266 pass, 0 fail
-npm run build      # production build  -> compiled, 20 routes
+npm test           # 298 tests         -> 298 pass, 0 fail
+npm run build      # production build  -> compiled, 21 routes
 npm run check      # all three of the above in sequence
 ```
 
@@ -27,18 +27,18 @@ none are being hidden.
 
 | Status | Count | IDs |
 | --- | --- | --- |
-| Fixed, with regression tests | 13 | C1, C2, H1, H2, H4, H5, H6, H7, M1, M2, M7, M8, M9 |
-| Partially fixed | 5 | H3, H8, H12, M12, M16 |
-| Confirmed, still open — Phase 1 | 4 | H9, H10, M10, M11 |
+| Fixed, with regression tests | 14 | C1, C2, H1, H2, H4, H5, H6, H7, M1, M2, M7, M8, M9, M15 |
+| Partially fixed | 6 | H3, H8, H10, H12, M12, M16 |
+| Confirmed, still open — Phase 1 | 3 | H9, M10, M11 |
 | Confirmed, still open — Phase 2 | 5 | H11, M3, M4, M5, M6 |
-| Confirmed, still open — Phase 3/4 | 3 | M13, M15, L2 |
+| Confirmed, still open — Phase 3/4 | 2 | M13, L2 |
 | Already accurate / closed | 2 | M14, L1 |
 
 All 32 findings (C1–C2, H1–H12, M1–M16, L1–L2) are accounted for above.
 
 No confirmed **critical or high security** finding remains open. The highs
-still outstanding — H9, H10, H11 — are reliability and data-integrity
-findings, which the report itself places in Phases 1 and 2.
+still outstanding — H9, H11, and the checkpoint half of H10 — are reliability
+and data-integrity findings, which the report itself places in Phases 1 and 2.
 
 ---
 
@@ -316,13 +316,47 @@ findings, which the report itself places in Phases 1 and 2.
 
 ### H10 — Assessment authority split between model and client
 
-- **Status:** Confirmed, open. Phase 1.
-- **Partially bounded now:** quiz and report bodies are schema-validated and
-  size-limited, so a tampered payload cannot be arbitrarily large or shaped.
-- **Still open:** `correctAnswer` is still delivered to the browser
-  (`src/components/QuizPanel.tsx:58`), MCQ grading is still client-side string
-  equality, and the server still accepts client-supplied question and history
-  structures.
+- **Status:** Partially fixed — the end-of-lesson assessment is fully
+  server-owned; mid-lesson checkpoints are not yet
+- **Confirmed at:** `/api/lesson/quiz` returned the model's output with
+  `correctAnswer` intact; `src/components/QuizPanel.tsx:58` compared the
+  learner's text to that key with `===`; and `/api/lesson/report` accepted the
+  browser's own `correct` flags, whose `scorePercent` went into the learner's
+  permanent history.
+- **Implementation:**
+  - `src/lib/grading.ts` — the stored/learner split. `StoredQuestion` holds
+    the key; `LearnerQuestion` is a projection where the key is *absent*, not
+    blanked. Stable question and option ids are assigned when the quiz is
+    generated, so grading compares ids rather than answer text.
+  - `prepareQuiz` resolves the model's free-text `correctAnswer` to an option
+    id once, tolerating the labels and punctuation models add ("B) 4", "4."),
+    and drops a question whose stated answer matches none of its own options —
+    an item every learner would fail whatever they picked.
+  - New tables `lesson_quizzes` and `lesson_quiz_attempts` (migration
+    `0002_quiz_grading.sql`). The attempt is keyed by quiz, which makes
+    submission idempotent: a double click or a retry returns the stored
+    outcome instead of grading — and paying for — the same answers twice.
+  - New `POST /api/lesson/quiz/grade` grades against the stored key. MCQ is
+    deterministic by option id; short answers go to `gradeShortAnswer`, a
+    versioned rubric on the server, with the reference answer never leaving
+    it and the learner's text explicitly fenced as untrusted data.
+  - `POST /api/lesson/report` now takes a `quizId`, reads the stored attempt,
+    and overrides the model's `scorePercent` with the stored one. The body no
+    longer has a field that could carry marks at all.
+  - `GRADER_VERSION`, `RUBRIC_VERSION` and `GENERATOR_VERSION` are persisted
+    with each attempt so a mark stays interpretable after the rubric changes.
+- **Tests:** `src/lib/grading.test.ts` (16) — no key in the projection, key
+  resolution, ungradeable questions dropped, id-based grading, a submission
+  that tries to assert its own correctness, partial credit and score bounds.
+  `src/app/api/routes.test.ts` adds 7: the key never reaches the browser, a
+  forged `correct: true` is ignored, re-submission replays without a second
+  model call, another learner's quiz is a 404 for both grading and reporting,
+  a report before grading is a 404, and the reported score comes from the
+  attempt rather than the model.
+- **Still open:** mid-lesson *checkpoints* still travel inside the lesson plan
+  with their `correctAnswer`, and `checkpointResults` are still reported by
+  the client. Closing that needs the plan to live server-side, which is the
+  `lesson_sessions` work.
 
 ### H11 — Document ingestion is a synchronous serverless workload
 
@@ -363,7 +397,7 @@ findings, which the report itself places in Phases 1 and 2.
 | M12 | Accessibility gaps | Partially fixed | Graphs now carry a text alternative (`role="img"` plus a description of expression, domain and label) and diagrams carry an accessible name; a rejected diagram is announced as a note rather than being silent. Labels, focus management, live regions and reduced-motion remain Phase 3. |
 | M13 | Password reset, verification, linking, export, deletion | Open (Phase 3) | |
 | M14 | README does not match the implementation | Closed | Already corrected by commit `54ea286` before this session; verified — no OpenRouter, filesystem-storage or localStorage-memory references remain. A Security Model section and the new commands were added. |
-| M15 | Migrations not versioned or constraint-rich | Open (Phase 4) | `db/schema.sql` is still applied as one idempotent script. |
+| M15 | Migrations not versioned or constraint-rich | **Fixed** | `db/schema.sql` became `db/migrations/0001_baseline.sql`; `db/migrate.mjs` now applies numbered files once each, in one transaction apiece, recorded in `schema_migrations` with a checksum. Editing an applied migration is an error, not a silent no-op. `0003_constraints.sql` adds score-range, non-blank-identifier, non-negative-index and non-empty-path checks — all `NOT VALID`, so they bind new writes without a migration deciding what to do about pre-existing rows. 7 tests cover the planner. |
 | M16 | Beta auth dependency, unpinned runtime | Partially fixed | `next-auth` pinned to the exact `5.0.0-beta.32` (no upgrade, just no drift). `engines` now pins Node ≥ 22.6 and npm ≥ 10. A tested upgrade plan for Auth.js v5 stable is still outstanding. |
 
 ## Low
@@ -374,6 +408,18 @@ findings, which the report itself places in Phases 1 and 2.
 | L2 | Visible SAMPLE BUTTON placeholder | Open (Phase 3) | `src/components/SettingsDashboard.tsx:347`. Removing it or giving it real behaviour is a product decision, not a security one. |
 
 ---
+
+## Migrations
+
+| Version | What it does | Rollback | Backfill |
+| --- | --- | --- | --- |
+| `0001_baseline` | The pre-existing `db/schema.sql`, unchanged. Every statement is `IF NOT EXISTS`, so it is safe to run against a database that already has these tables — which is exactly what happens the first time an existing deployment runs the new runner. | Not applicable — this is the baseline. | None. |
+| `0002_quiz_grading` | Adds `lesson_quizzes` and `lesson_quiz_attempts` for H10. | `DROP TABLE lesson_quiz_attempts, lesson_quizzes;` — destroys graded attempts, so only for a rollback that also reverts the application. | None. Lessons completed before this migration have their score in `learner_history_entries` already; there is no attempt row to reconstruct and none is needed. |
+| `0003_constraints` | Adds `NOT VALID` CHECK constraints for M15. | `ALTER TABLE <t> DROP CONSTRAINT <name>;` for each. Non-destructive. | Optional: `ALTER TABLE <t> VALIDATE CONSTRAINT <name>;` once existing rows are known to be clean. Left to you deliberately — a migration should not decide what to do about pre-existing rows that violate a new rule. |
+
+**Not applied anywhere.** `npm run migrate -- --status` lists what a database
+has and what is pending; `npm run migrate` applies the rest. Run it against
+staging before production.
 
 ## Awaiting your approval
 
@@ -394,16 +440,12 @@ findings, which the report itself places in Phases 1 and 2.
 
 Phase 1 continues, in this order:
 
-1. **H10** — move answer keys and grading to the server. Stable question ids,
-   deterministic MCQ grading server-side, rubric-bounded model grading only
-   for short answers, and grading evidence persisted with a grader version.
-   `correctAnswer` stops being sent to the browser.
-2. **H9** — rewrite `useSpeech` as an explicit state machine: per-utterance
+1. **H9** — rewrite `useSpeech` as an explicit state machine: per-utterance
    ids, exactly-once settlement, `AbortSignal` cancellation, watchdogs
    suspended during pause, preview isolated from lesson narration, and a
    manual "continue" fallback when the browser cannot narrate.
-3. **M10/M11** — document deletion and retention; VideoRecorder track
+2. **M10/M11** — document deletion and retention; VideoRecorder track
    cleanup, object-URL revocation and duration/size caps.
-4. **Durable `lesson_sessions`** — the server-owned aggregate that closes the
-   rest of H8 (dashboard rehydration, one transactional completion) and gives
-   refresh-and-resume.
+3. **Durable `lesson_sessions`** — the server-owned aggregate that closes the
+   rest of H8 (dashboard rehydration, one transactional completion), the rest
+   of H10 (checkpoint keys off the client), and gives refresh-and-resume.

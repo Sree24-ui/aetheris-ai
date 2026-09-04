@@ -1,10 +1,5 @@
 import { z } from "zod";
-import {
-  checkpointQuestionSchema,
-  lessonPlanSchema,
-  lessonSectionSchema,
-  quizQuestionSchema,
-} from "./model";
+import { checkpointQuestionSchema, lessonPlanSchema, lessonSectionSchema } from "./model";
 
 /**
  * Runtime schemas for every request body the API accepts (H2).
@@ -92,20 +87,35 @@ export const lessonQuizRequestSchema = z.object({
   language,
 });
 
+// --- /api/lesson/quiz/grade -----------------------------------------------
+
+/**
+ * H10: an answer names an option by id, or supplies text for a short answer.
+ * Nothing here can assert that an answer was correct — that verdict is the
+ * server's, reached against the key it stored when the quiz was generated.
+ */
+export const quizGradeRequestSchema = z.object({
+  quizId: z.uuid(),
+  answers: z
+    .array(
+      z.object({
+        questionId: z.string().min(1).max(40),
+        optionId: z.string().min(1).max(40).optional(),
+        text: z.string().max(8000).optional(),
+      })
+    )
+    .max(20)
+    .default([]),
+});
+
 // --- /api/lesson/report ---------------------------------------------------
 
 export const lessonReportRequestSchema = z.object({
   lessonPlan: lessonPlanSchema,
-  quizResults: z
-    .array(
-      z.object({
-        question: quizQuestionSchema,
-        studentAnswer: z.string().max(8000).default(""),
-        correct: z.boolean(),
-      })
-    )
-    .max(50)
-    .default([]),
+  // The quiz outcome is read from the stored, server-graded attempt. It used
+  // to arrive in the body with client-decided `correct` flags on it, which
+  // made the learner's own browser the authority on their score.
+  quizId: z.uuid(),
   checkpointResults: z
     .array(z.object({ conceptTag: z.string().min(1).max(120), correct: z.boolean() }))
     .max(50)
