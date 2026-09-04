@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { LessonPlan, LessonSection, EvalResult, TranscriptMessage, VisualType } from "@/lib/types";
+import type { LessonSection, EvalResult, TranscriptMessage, VisualType } from "@/lib/types";
+import type { LearnerPlan } from "@/lib/lessonState";
+import { apiRequest, errorMessage } from "@/lib/http";
 import { useSpeech } from "@/hooks/useSpeech";
 import Avatar from "./Avatar";
 import SlideRenderer from "./SlideRenderer";
@@ -30,11 +32,18 @@ const VISUAL_ICON: Record<VisualType, string> = {
 };
 
 interface Props {
-  lessonPlan: LessonPlan;
+  lessonPlan: LearnerPlan;
+  /** The durable lesson this component is driving. */
+  sessionId: string;
+  /** The session version to send with the first command. */
+  initialVersion: number;
+  /** Where a restored lesson left off. */
+  initialSectionIndex?: number;
+  initialTranscript?: TranscriptMessage[];
   onComplete: (result: {
-    checkpointResults: { conceptTag: string; correct: boolean }[];
-    finalPlan: LessonPlan;
+    finalPlan: LearnerPlan;
     transcript: TranscriptMessage[];
+    version: number;
   }) => void;
 }
 
@@ -47,21 +56,35 @@ interface ChatMessage {
   text: string;
 }
 
-export default function TeachingSession({ lessonPlan, onComplete }: Props) {
+export default function TeachingSession({
+  lessonPlan,
+  sessionId,
+  initialVersion,
+  initialSectionIndex = 0,
+  initialTranscript = [],
+  onComplete,
+}: Props) {
   const [sections, setSections] = useState<LessonSection[]>(lessonPlan.sections);
   const [language, setLanguage] = useState(lessonPlan.language);
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState(initialSectionIndex);
+  /**
+   * The session version this component believes it is acting on. Every
+   * command names it, and the server refuses anything stale — which is what
+   * stops a background tab or a delayed retry moving the lesson on.
+   */
+  const versionRef = useRef(initialVersion);
+  /** Shown when progress could not be saved; never blocks the lesson. */
+  const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("narrating");
   const [answer, setAnswer] = useState("");
   const [evalResult, setEvalResult] = useState<EvalResult | null>(null);
-  const [checkpointResults, setCheckpointResults] = useState<
-    { conceptTag: string; correct: boolean }[]
-  >([]);
   const [translating, setTranslating] = useState(false);
   const [translateError, setTranslateError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [playToken, setPlayToken] = useState(0);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    initialTranscript.map((m, i) => ({ id: `r${i}`, role: m.role, text: m.text }))
+  );
   const [showCaptions, setShowCaptions] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
 
@@ -198,17 +221,52 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
     }
   }
 
-  function goNext(resultsOverride?: { conceptTag: string; correct: boolean }[]) {
+  /**
+   * Records the lesson's position on the server.
+   *
+   * Deliberately non-blocking: narration must not stall because a progress
+   * write is slow. A failure is surfaced rather than swallowed, and the next
+   * successful command re-syncs the version.
+   */
+  async function syncPosition(toSectionIndex: number) {
+    try {
+      const { session } = await apiRequest<{ session: { version: number } }>(
+        "/api/lesson/session",
+        {
+          method: "POST",
+          body: {
+            sessionId,
+            expectedVersion: versionRef.current,
+            command: {
+              type: "advance",
+              toSectionIndex,
+              transcript: messagesRef.current.map(({ role, text }) => ({ role, text })),
+            },
+          },
+        }
+      );
+      versionRef.current = session.version;
+      setSyncWarning(null);
+    } catch (err) {
+      setSyncWarning(
+        `Progress could not be saved (${errorMessage(err)}) — the lesson continues, but a refresh may not resume exactly here.`
+      );
+    }
+  }
+
+  function goNext() {
     stop();
     if (index + 1 >= sectionsRef.current.length) {
       setPhase("done");
       onComplete({
-        checkpointResults: resultsOverride ?? checkpointResults,
         finalPlan: { ...lessonPlan, sections: sectionsRef.current, language: languageRef.current },
         transcript: messagesRef.current.map(({ role, text }) => ({ role, text })),
+        version: versionRef.current,
       });
     } else {
-      setIndex((i) => i + 1);
+      const nextIndex = index + 1;
+      setIndex(nextIndex);
+      void syncPosition(nextIndex);
     }
   }
 
@@ -218,35 +276,30 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
     setSubmitting(true);
     setPhase("evaluating");
     try {
-      const res = await fetch("/api/lesson/evaluate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question: section.checkpoint,
-          studentAnswer: answer,
-          sectionContext: section.narration,
-          language,
-        }),
-      });
-      const resultData = await res.json();
-      if (!res.ok) throw new Error(resultData.error || "Evaluation failed");
-      const result: EvalResult = resultData;
+      // H10: the question, its reference answer and the section context all
+      // come from the plan the server stored. This names a section; it does
+      // not carry the key, and the verdict it gets back is the server's.
+      const graded = await apiRequest<{ evaluation: EvalResult; version: number }>(
+        "/api/lesson/evaluate",
+        {
+          method: "POST",
+          body: {
+            sessionId,
+            expectedVersion: versionRef.current,
+            sectionId: section.id,
+            studentAnswer: answer,
+            language,
+          },
+        }
+      );
+      versionRef.current = graded.version;
+      const result = graded.evaluation;
       setEvalResult(result);
-      // Computed explicitly (not read back from state) so the immediate
-      // goNext() below — which can be the lesson's very last section —
-      // always includes this result. Reading `checkpointResults` from the
-      // enclosing closure would still see the pre-update value here, since
-      // the setCheckpointResults above only takes effect on the next render.
-      const updatedCheckpointResults = [
-        ...checkpointResults,
-        { conceptTag: section.checkpoint!.conceptTag, correct: result.correct },
-      ];
-      setCheckpointResults(updatedCheckpointResults);
 
       if (result.correct || result.partialCredit >= 0.7) {
         addMessage("ai", result.feedback);
         await speak(result.feedback, language);
-        goNext(updatedCheckpointResults);
+        goNext();
       } else {
         setPhase("remediation");
         const remediationText = [
@@ -270,7 +323,7 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
         correct: false,
         partialCredit: 0,
         feedback:
-          (err as Error).message ||
+          errorMessage(err) ||
           "Could not reach the AI teacher to check that answer — please try submitting again.",
         misconception: undefined,
       });
@@ -435,6 +488,11 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
 
         {translating && (
           <div className="text-xs text-primary-fixed-dim">Switching language, keeping lesson context...</div>
+        )}
+        {syncWarning && (
+          <div role="status" className="text-xs text-on-surface-variant">
+            {syncWarning}
+          </div>
         )}
         {translateError && !translating && (
           <div className="text-xs text-error">{translateError}</div>

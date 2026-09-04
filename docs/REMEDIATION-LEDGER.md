@@ -4,9 +4,8 @@ Tracks every finding in `Aetheris_AI_Project_Audit_Report.md` against the code
 as it stands. A finding is only marked **Fixed** when its acceptance test
 passes; "the code looks right" is not a status.
 
-**Progress: Phase 0 complete; Phase 1 in progress.** Phase 0 (security
-containment) is closed. Phase 1 (reliable learning workflow) has started with
-the persistence and progress findings — H7, H8, M1 and M2. Everything still
+**Progress: Phases 0 and 1 complete; Phase 2 in progress.** Security
+containment and the reliable learning workflow are closed. Everything still
 open carries its current status and the exact next step.
 
 ## Verification commands
@@ -14,8 +13,8 @@ open carries its current status and the exact next step.
 ```bash
 npm run lint       # eslint            -> clean
 npx tsc --noEmit   # TypeScript strict -> clean
-npm test           # 322 tests         -> 322 pass, 0 fail
-npm run build      # production build  -> compiled, 22 routes
+npm test           # 358 tests         -> 358 pass, 0 fail
+npm run build      # production build  -> compiled, 25 routes
 npm run check      # all three of the above in sequence
 ```
 
@@ -27,17 +26,16 @@ none are being hidden.
 
 | Status | Count | IDs |
 | --- | --- | --- |
-| Fixed, with regression tests | 17 | C1, C2, H1, H2, H4, H5, H6, H7, H9, M1, M2, M7, M8, M9, M10, M11, M15 |
-| Partially fixed | 6 | H3, H8, H10, H12, M12, M16 |
+| Fixed, with regression tests | 19 | C1, C2, H1, H2, H4, H5, H6, H7, H8, H9, H10, M1, M2, M7, M8, M9, M10, M11, M15 |
+| Partially fixed | 4 | H3, H12, M12, M16 |
 | Confirmed, still open — Phase 2 | 5 | H11, M3, M4, M5, M6 |
 | Confirmed, still open — Phase 3/4 | 2 | M13, L2 |
 | Already accurate / closed | 2 | M14, L1 |
 
 All 32 findings (C1–C2, H1–H12, M1–M16, L1–L2) are accounted for above.
 
-No confirmed **critical or high security** finding remains open. The highs
-still outstanding — H11, and the checkpoint half of H10 — are reliability and
-data-integrity findings, which the report itself places in Phases 1 and 2.
+No confirmed **critical or high security** finding remains open. The one high
+still outstanding, H11, is the Phase 2 ingestion work.
 
 ---
 
@@ -283,7 +281,7 @@ data-integrity findings, which the report itself places in Phases 1 and 2.
 
 ### H8 — Learning path state is incomplete and can advance incorrectly
 
-- **Status:** Partially fixed — three of the four sub-problems are closed
+- **Status:** Fixed
 - **Fixed: the off-by-one.** `advancePathForUser` clamped with
   `jsonb_array_length(path->'steps')`, one *past* the last valid index, so
   finishing the final step left the path pointing at a step that does not
@@ -302,10 +300,17 @@ data-integrity findings, which the report itself places in Phases 1 and 2.
 - **Tests:** `src/app/api/routes.test.ts` — duplicate completion advances
   exactly once, the index never runs past the last step, advancing with no
   saved path is a 404, and a too-large `stepIndex` is clamped.
-- **Still open:** the dashboard does not rehydrate the saved path and make
-  resuming it a first-class action, and completion is still several requests
-  rather than one transactional command. Both land with the durable
-  `lesson_sessions` aggregate.
+- **Fixed: rehydration and atomic completion.** A durable `lesson_sessions`
+  aggregate (migration `0004`) now owns the lesson. `/app` asks the server
+  what is running on every load, so a refresh — or a sign-in on another
+  device — resumes the lesson at its section with its transcript rather than
+  restarting it. `POST /api/lesson/complete` commits the history row, the
+  path advance and the session's own completion in one transaction, replacing
+  three independent client requests any of which could fail on its own. A
+  partial unique index allows one live session per learner, so "resume" is
+  never ambiguous and two tabs cannot each believe they own the lesson.
+- **Still open (Phase 3):** making the learning path the *central* dashboard
+  workflow, as opposed to correctly resumable, is Phase 3 product work.
 
 ### H9 — Speech cancellation and pause races
 
@@ -353,8 +358,7 @@ data-integrity findings, which the report itself places in Phases 1 and 2.
 
 ### H10 — Assessment authority split between model and client
 
-- **Status:** Partially fixed — the end-of-lesson assessment is fully
-  server-owned; mid-lesson checkpoints are not yet
+- **Status:** Fixed
 - **Confirmed at:** `/api/lesson/quiz` returned the model's output with
   `correctAnswer` intact; `src/components/QuizPanel.tsx:58` compared the
   learner's text to that key with `===`; and `/api/lesson/report` accepted the
@@ -390,10 +394,16 @@ data-integrity findings, which the report itself places in Phases 1 and 2.
   model call, another learner's quiz is a 404 for both grading and reporting,
   a report before grading is a 404, and the reported score comes from the
   attempt rather than the model.
-- **Still open:** mid-lesson *checkpoints* still travel inside the lesson plan
-  with their `correctAnswer`, and `checkpointResults` are still reported by
-  the client. Closing that needs the plan to live server-side, which is the
-  `lesson_sessions` work.
+- **Fixed: checkpoints too.** The lesson plan now lives in `lesson_sessions`,
+  and the browser receives `toLearnerPlan(plan)` — a projection where each
+  checkpoint's `correctAnswer` is absent rather than blanked, and which is
+  rebuilt field by field so adding a field to `CheckpointQuestion` cannot
+  silently start leaking it. `POST /api/lesson/evaluate` now names a section
+  of a stored lesson instead of carrying the question and its key, grades
+  against the stored plan, and records the verdict on the session. The report
+  reads the checkpoint outcomes from there rather than accepting the
+  browser's tally, and `/api/lesson/quiz` and `/api/lesson/report` no longer
+  accept a lesson plan in their bodies at all.
 
 ### H11 — Document ingestion is a synchronous serverless workload
 
@@ -452,6 +462,7 @@ data-integrity findings, which the report itself places in Phases 1 and 2.
 | --- | --- | --- | --- |
 | `0001_baseline` | The pre-existing `db/schema.sql`, unchanged. Every statement is `IF NOT EXISTS`, so it is safe to run against a database that already has these tables — which is exactly what happens the first time an existing deployment runs the new runner. | Not applicable — this is the baseline. | None. |
 | `0002_quiz_grading` | Adds `lesson_quizzes` and `lesson_quiz_attempts` for H10. | `DROP TABLE lesson_quiz_attempts, lesson_quizzes;` — destroys graded attempts, so only for a rollback that also reverts the application. | None. Lessons completed before this migration have their score in `learner_history_entries` already; there is no attempt row to reconstruct and none is needed. |
+| `0004_lesson_sessions` | Adds `lesson_sessions` for the durable lesson aggregate, with a partial unique index allowing one live session per learner. | `DROP TABLE lesson_sessions;` — destroys lessons in progress; completed ones are already in `learner_history_entries`. | None. Lessons started before this migration were browser-only and cannot be recovered; they simply are not resumable. |
 | `0003_constraints` | Adds `NOT VALID` CHECK constraints for M15. | `ALTER TABLE <t> DROP CONSTRAINT <name>;` for each. Non-destructive. | Optional: `ALTER TABLE <t> VALIDATE CONSTRAINT <name>;` once existing rows are known to be clean. Left to you deliberately — a migration should not decide what to do about pre-existing rows that violate a new rule. |
 
 **Not applied anywhere.** `npm run migrate -- --status` lists what a database
@@ -475,13 +486,14 @@ staging before production.
 
 ## Next implementation step
 
-Phase 1 continues, in this order:
+Phase 2, in this order:
 
-1. **Durable `lesson_sessions`** — the last Phase 1 item, and the one the
-   remaining partial findings hang off. A server-owned lesson aggregate
-   closes the rest of H8 (dashboard rehydration, one transactional
-   completion) and the rest of H10 (checkpoint answer keys stop being shipped
-   inside the lesson plan), and gives refresh-and-resume.
-
-Then Phase 2 opens with H11 (asynchronous ingestion), which is where the
-infrastructure decisions below start to bite.
+1. **M3** — chunk overlap at ordinary paragraph boundaries.
+2. **M5/M6** — retrieval thresholds, hybrid lexical + vector search,
+   citations, and recording which embedding model produced each vector so
+   two models' vectors can never be compared.
+3. **Provider resilience** — health tracking, circuit breaker, fallback and
+   budget-aware routing, with structured telemetry.
+4. **H11** — asynchronous ingestion behind a job model, with a local adapter
+   and the production requirement documented rather than a vendor hardcoded.
+5. **M4** — pgvector, which needs your approval (see below).

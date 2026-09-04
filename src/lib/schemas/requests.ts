@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { checkpointQuestionSchema, lessonPlanSchema, lessonSectionSchema } from "./model";
+import { lessonSectionSchema } from "./model";
 
 /**
  * Runtime schemas for every request body the API accepts (H2).
@@ -58,6 +58,13 @@ export const lessonPlanRequestSchema = z.object({
   topic,
   profile: learnerProfileSchema,
   docId: z.uuid().optional(),
+  /**
+   * The learning-path step this lesson belongs to, when it was started from
+   * one. Recorded on the session so completion can only ever advance the step
+   * the lesson actually came from.
+   */
+  pathTopic: z.string().max(300).optional(),
+  pathStepIndex: z.number().int().min(0).max(19).optional(),
 });
 
 // --- /api/lesson/chat -----------------------------------------------------
@@ -73,18 +80,74 @@ export const lessonChatRequestSchema = z.object({
 
 // --- /api/lesson/evaluate -------------------------------------------------
 
+/**
+ * A checkpoint answer. The question, its reference answer and the section
+ * context all come from the stored lesson plan — the request names the
+ * section, it does not carry the question or the key.
+ */
 export const lessonEvaluateRequestSchema = z.object({
-  question: checkpointQuestionSchema,
-  studentAnswer: z.string().max(8000).default(""),
-  sectionContext: z.string().max(20_000).default(""),
-  language,
+  sessionId: z.uuid(),
+  expectedVersion: z.number().int().min(1),
+  sectionId: z.string().min(1).max(120),
+  studentAnswer: z.string().min(1).max(8000),
+  /**
+   * Which language to write the feedback in. It only affects the wording:
+   * the question, the reference answer and the verdict all come from the
+   * stored plan, so this cannot influence the grade.
+   */
+  language: language.optional(),
+});
+
+// --- /api/lesson/session --------------------------------------------------
+
+const transcript = z.array(transcriptMessageSchema).max(400);
+
+export const lessonCommandRequestSchema = z.object({
+  sessionId: z.uuid(),
+  /**
+   * The version the caller believed the session was on. A command carrying a
+   * stale version is refused rather than applied, which is what makes a
+   * duplicate or out-of-order request from a background tab harmless.
+   */
+  expectedVersion: z.number().int().min(1),
+  command: z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("advance"),
+      toSectionIndex: z.number().int().min(0).max(19),
+      transcript: transcript.optional(),
+    }),
+    z.object({ type: z.literal("pause") }),
+    z.object({ type: z.literal("resume") }),
+    z.object({ type: z.literal("cancel") }),
+  ]),
+});
+
+// --- /api/lesson/complete -------------------------------------------------
+
+export const lessonCompleteRequestSchema = z.object({
+  sessionId: z.uuid(),
+  expectedVersion: z.number().int().min(1),
+  quizId: z.uuid(),
+  /** Reused across retries, so a repeated completion is a replay. */
+  historyId: z.uuid(),
+  report: z.object({
+    strongAreas: z.array(z.string().min(1).max(200)).max(40).default([]),
+    weakAreas: z.array(z.string().min(1).max(200)).max(40).default([]),
+    recommendation: z.string().max(4000).optional(),
+  }),
+  transcript: transcript.default([]),
 });
 
 // --- /api/lesson/quiz -----------------------------------------------------
 
+/**
+ * The lesson plan is read from the stored session rather than posted back:
+ * it is the server's copy that has the checkpoint keys, and a whole plan in
+ * a request body was a megabyte of payload the server already had.
+ */
 export const lessonQuizRequestSchema = z.object({
-  lessonPlan: lessonPlanSchema,
-  language,
+  sessionId: z.uuid(),
+  language: language.optional(),
 });
 
 // --- /api/lesson/quiz/grade -----------------------------------------------
@@ -110,17 +173,14 @@ export const quizGradeRequestSchema = z.object({
 
 // --- /api/lesson/report ---------------------------------------------------
 
+/**
+ * Everything the report is built from now lives on the server: the lesson
+ * plan and the checkpoint outcomes come from the session, the quiz outcome
+ * from the graded attempt. The request names them; it does not carry them.
+ */
 export const lessonReportRequestSchema = z.object({
-  lessonPlan: lessonPlanSchema,
-  // The quiz outcome is read from the stored, server-graded attempt. It used
-  // to arrive in the body with client-decided `correct` flags on it, which
-  // made the learner's own browser the authority on their score.
+  sessionId: z.uuid(),
   quizId: z.uuid(),
-  checkpointResults: z
-    .array(z.object({ conceptTag: z.string().min(1).max(120), correct: z.boolean() }))
-    .max(50)
-    .default([]),
-  language,
 });
 
 // --- /api/lesson/translate-section ----------------------------------------

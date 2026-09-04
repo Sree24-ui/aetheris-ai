@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { LessonPlan } from "@/lib/types";
 import type { GradedAnswer, LearnerQuestion } from "@/lib/grading";
 import { apiRequest, errorMessage } from "@/lib/http";
 import Icon from "./Icon";
@@ -13,7 +12,10 @@ export interface QuizOutcome {
 }
 
 interface Props {
-  lessonPlan: LessonPlan;
+  /** The lesson being assessed; the questions come from its stored plan. */
+  sessionId: string;
+  /** Shown in the heading only. */
+  topic: string;
   language: string;
   onFinished: (outcome: QuizOutcome) => void;
 }
@@ -33,7 +35,7 @@ interface GeneratedQuiz {
  * the marks come back from the server, and nothing here can assert that an
  * answer was correct.
  */
-export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
+export default function QuizPanel({ sessionId, topic, language, onFinished }: Props) {
   const [quiz, setQuiz] = useState<GeneratedQuiz | null>(null);
   /** questionId -> chosen option id (mcq) or typed text (short). */
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -46,7 +48,7 @@ export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
     const controller = new AbortController();
     apiRequest<GeneratedQuiz>("/api/lesson/quiz", {
       method: "POST",
-      body: { lessonPlan, language },
+      body: { sessionId, language },
       signal: controller.signal,
     })
       .then((data) => {
@@ -130,7 +132,7 @@ export default function QuizPanel({ lessonPlan, language, onFinished }: Props) {
     <div className="w-full max-w-2xl mx-auto space-y-5 py-4">
       <h2 className="font-display-lg-mobile text-display-lg-mobile text-on-surface flex items-center gap-3">
         <Icon name="quiz" className="text-primary-fixed-dim" filled />
-        Assessment: {lessonPlan.topic}
+        Assessment: {topic}
       </h2>
       {quiz.questions.map((q, i) => (
         <fieldset key={q.id} className="glass-panel rounded-xl p-5 space-y-3">

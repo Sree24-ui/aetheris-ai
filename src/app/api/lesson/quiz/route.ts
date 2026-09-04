@@ -5,6 +5,7 @@ import { lessonQuizRequestSchema } from "@/lib/schemas/requests";
 import { generateQuiz } from "@/lib/teachingAgent";
 import { prepareQuiz, toLearnerQuiz } from "@/lib/grading";
 import { saveQuiz } from "@/lib/quizStore";
+import { loadSession } from "@/lib/lessonSessionStore";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -21,14 +22,16 @@ export const POST = defineRoute(
   {
     name: "lesson-quiz",
     schema: lessonQuizRequestSchema,
-    // A whole lesson plan travels in this body; the schema bounds its shape,
-    // this bounds the bytes accepted before parsing starts.
-    maxBytes: 1024 * 1024,
+    maxBytes: 4 * 1024,
     rateLimit: RATE_LIMITS.model,
     modelBudget: true,
   },
   async ({ body, userId, requestId }) => {
-    const generated = await generateQuiz(body);
+    const session = await loadSession(body.sessionId, userId);
+    if (!session) throw new ApiError(404, "notFound", "That lesson could not be found.");
+
+    const language = body.language ?? session.language;
+    const generated = await generateQuiz({ lessonPlan: session.plan, language });
     const { stored, dropped } = prepareQuiz(generated);
 
     if (dropped > 0) {
@@ -46,7 +49,7 @@ export const POST = defineRoute(
 
     const quizId = randomUUID();
     await saveQuiz(
-      { id: quizId, topic: body.lessonPlan.topic, language: body.language, questions: stored },
+      { id: quizId, topic: session.plan.topic, language, questions: stored },
       userId
     );
 

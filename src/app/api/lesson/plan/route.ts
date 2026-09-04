@@ -1,8 +1,11 @@
+import { randomUUID } from "crypto";
 import { ApiError, defineRoute } from "@/lib/apiGuard";
 import { RATE_LIMITS } from "@/lib/security/rateLimit";
 import { lessonPlanRequestSchema } from "@/lib/schemas/requests";
 import { planLesson } from "@/lib/teachingAgent";
 import { searchDocument, documentExists } from "@/lib/vectorStore";
+import { toLearnerPlan } from "@/lib/lessonState";
+import { createSession } from "@/lib/lessonSessionStore";
 
 export const runtime = "nodejs";
 // Kept under the 60s ceiling that Vercel's Hobby tier enforces: a higher
@@ -10,6 +13,14 @@ export const runtime = "nodejs";
 // this route's own timeout fires, leaving nothing useful in the logs.
 export const maxDuration = 60;
 
+/**
+ * Plans a lesson and opens a durable session for it.
+ *
+ * The plan used to be returned to the browser and kept only there, so a
+ * refresh lost the lesson and every checkpoint answer travelled with it. The
+ * full plan is now stored server-side; the response carries the session id,
+ * its version, and a projection of the plan with the answer keys removed.
+ */
 export const POST = defineRoute(
   {
     name: "lesson-plan",
@@ -35,6 +46,25 @@ export const POST = defineRoute(
       isDocumentGrounded = true;
     }
 
-    return planLesson({ topic, profile, groundedContext, isDocumentGrounded });
+    const plan = await planLesson({ topic, profile, groundedContext, isDocumentGrounded });
+
+    const session = await createSession(
+      {
+        id: randomUUID(),
+        topic: plan.topic,
+        language: plan.language,
+        profile,
+        plan,
+        pathTopic: body.pathTopic ?? null,
+        pathStepIndex: body.pathStepIndex ?? null,
+      },
+      userId
+    );
+
+    return {
+      sessionId: session.id,
+      version: session.version,
+      plan: toLearnerPlan(plan),
+    };
   }
 );

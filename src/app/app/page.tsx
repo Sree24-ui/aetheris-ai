@@ -1,14 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   LearnerProfile,
-  LessonPlan,
   LearningReport,
   LearningPath,
   DocumentSummary,
   TranscriptMessage,
 } from "@/lib/types";
+import type { LearnerPlan } from "@/lib/lessonState";
 import AppShell from "@/components/AppShell";
 import HomeDashboard from "@/components/HomeDashboard";
 import ConfigForm from "@/components/ConfigForm";
@@ -19,18 +19,33 @@ import LearningPathPanel from "@/components/LearningPathPanel";
 import LearnerDashboard from "@/components/LearnerDashboard";
 import ProfileDashboard from "@/components/ProfileDashboard";
 import SettingsDashboard from "@/components/SettingsDashboard";
-import { addHistoryEntry, setCurrentPath, advancePath } from "@/lib/memory";
+import { setCurrentPath } from "@/lib/memory";
 import { apiRequest, errorMessage, isSessionExpired } from "@/lib/http";
+
+/** The shape /api/lesson/session returns for a lesson still in flight. */
+interface RestoredSession {
+  id: string;
+  version: number;
+  profile: LearnerProfile;
+  plan: LearnerPlan;
+  currentSectionIndex: number;
+  transcript: TranscriptMessage[];
+}
 
 type Stage = "home" | "config" | "planning" | "teaching" | "quiz" | "report" | "path" | "dashboard" | "profile" | "settings";
 
 export default function Home() {
   const [stage, setStage] = useState<Stage>("home");
   const [profile, setProfile] = useState<LearnerProfile | null>(null);
-  const [lessonPlan, setLessonPlan] = useState<LessonPlan | null>(null);
-  const [checkpointResults, setCheckpointResults] = useState<
-    { conceptTag: string; correct: boolean }[]
-  >([]);
+  const [lessonPlan, setLessonPlan] = useState<LearnerPlan | null>(null);
+  /**
+   * The durable lesson the server is running for this learner. Everything
+   * that used to live only in this component — the plan, the position, the
+   * checkpoint outcomes — now belongs to it, which is what makes a refresh
+   * resume rather than restart.
+   */
+  const [lessonSession, setLessonSession] = useState<{ id: string; version: number } | null>(null);
+  const [restoring, setRestoring] = useState(true);
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const [report, setReport] = useState<LearningReport | null>(null);
   const [learningPath, setLearningPath] = useState<LearningPath | null>(null);
@@ -41,18 +56,37 @@ export default function Home() {
   /** The graded attempt, kept so the retry button can re-run the report step. */
   const [pendingQuizOutcome, setPendingQuizOutcome] = useState<QuizOutcome | null>(null);
   /**
-   * H8: which learning-path step the lesson in progress belongs to, or null
-   * when it is a standalone lesson. Completion used to advance whatever path
-   * happened to be active, so finishing an unrelated lesson skipped a step of
-   * a curriculum the learner was not even working through.
-   */
-  const [activePathStep, setActivePathStep] = useState<number | null>(null);
-  /**
    * H7: the id for the history row of the lesson being finished, minted once
    * and reused if the save has to be retried. A fresh UUID per attempt would
    * write a second copy of the same lesson.
    */
   const [pendingHistoryId, setPendingHistoryId] = useState<string | null>(null);
+  /** Where a restored lesson left off, handed to TeachingSession on mount. */
+  const [resumed, setResumed] = useState<RestoredSession | null>(null);
+
+  // A reload asks the server what is running rather than starting over.
+  useEffect(() => {
+    const controller = new AbortController();
+    apiRequest<{ session: RestoredSession | null }>("/api/lesson/session", {
+      signal: controller.signal,
+    })
+      .then(({ session }) => {
+        if (session && session.plan.sections.length > 0) {
+          setLessonSession({ id: session.id, version: session.version });
+          setLessonPlan(session.plan);
+          setProfile(session.profile);
+          setResumed(session);
+          setStage("teaching");
+        }
+        setRestoring(false);
+      })
+      .catch(() => {
+        // A learner who cannot be told what is running is better off at the
+        // dashboard than stuck on a spinner.
+        if (!controller.signal.aborted) setRestoring(false);
+      });
+    return () => controller.abort();
+  }, []);
 
   function goToConfig(params: { topic: string; doc?: DocumentSummary }) {
     setPendingTopic(params.topic);
@@ -66,23 +100,29 @@ export default function Home() {
     fromPathStep: number | null = null
   ) {
     setProfile(params.profile);
-    setActivePathStep(fromPathStep);
     setPendingHistoryId(null);
+    setResumed(null);
     // Remembered so returning to the form after a failure restores exactly
     // what was submitted rather than resetting to defaults.
     setPendingTopic(params.topic);
     setStage("planning");
     setError(null);
     try {
-      const res = await fetch("/api/lesson/plan", {
+      const started = await apiRequest<{
+        sessionId: string;
+        version: number;
+        plan: LearnerPlan;
+      }>("/api/lesson/plan", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(params),
+        body: {
+          ...params,
+          ...(fromPathStep === null
+            ? {}
+            : { pathTopic: learningPath?.topic, pathStepIndex: fromPathStep }),
+        },
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to plan lesson");
-      setLessonPlan(data);
-      setCheckpointResults([]);
+      setLessonSession({ id: started.sessionId, version: started.version });
+      setLessonPlan(started.plan);
       setStage("teaching");
     } catch (err) {
       setError(describe(err));
@@ -114,63 +154,61 @@ export default function Home() {
   }
 
   function handleTeachingComplete(result: {
-    checkpointResults: { conceptTag: string; correct: boolean }[];
-    finalPlan: LessonPlan;
+    finalPlan: LearnerPlan;
     transcript: TranscriptMessage[];
+    version: number;
   }) {
-    setCheckpointResults(result.checkpointResults);
+    // Checkpoint outcomes are no longer carried back from the browser — the
+    // server recorded each one as it was graded.
     setLessonPlan(result.finalPlan);
     setTranscript(result.transcript);
+    setLessonSession((s) => (s ? { ...s, version: result.version } : s));
     setStage("quiz");
   }
 
   async function handleQuizFinished(outcome: QuizOutcome) {
-    if (!lessonPlan) return;
+    if (!lessonPlan || !lessonSession) return;
     setError(null);
     setPendingQuizOutcome(outcome);
     // Reused across retries so a repeated save is a replay, not a duplicate.
     const historyId = pendingHistoryId ?? crypto.randomUUID();
     setPendingHistoryId(historyId);
     try {
-      // H10: the report is built from the attempt the server graded and
-      // stored. Only its id travels — the marks are not the browser's to send.
+      // H10: the report is built from the lesson and the graded attempt the
+      // server stored. Only their ids travel — the plan, the checkpoint
+      // outcomes and the marks are not the browser's to send.
       const reportData = await apiRequest<LearningReport>("/api/lesson/report", {
         method: "POST",
-        body: {
-          lessonPlan,
-          quizId: outcome.quizId,
-          checkpointResults,
-          language: lessonPlan.language,
-        },
+        body: { sessionId: lessonSession.id, quizId: outcome.quizId },
       });
       setReport(reportData);
-      await addHistoryEntry({
-        id: historyId,
-        topic: lessonPlan.topic,
-        date: new Date().toISOString(),
-        language: lessonPlan.language,
-        subject: lessonPlan.subject,
-        // The server's score, not the model's restatement of it.
-        scorePercent: outcome.scorePercent,
-        strongAreas: reportData.strongAreas,
-        weakAreas: reportData.weakAreas,
-        recommendation: reportData.recommendation,
-        transcript,
-        quiz: outcome.results.map((r) => ({
-          question: r.question,
-          studentAnswer: r.studentAnswer,
-          correct: r.correct,
-        })),
+
+      // H8: history, learning-path progress and the lesson's own completion
+      // commit together or not at all. This used to be three independent
+      // requests, any of which could fail on its own.
+      const completion = await apiRequest<{
+        pathStepIndex: number | null;
+        pathAdvanced: boolean;
+      }>("/api/lesson/complete", {
+        method: "POST",
+        body: {
+          sessionId: lessonSession.id,
+          expectedVersion: lessonSession.version,
+          quizId: outcome.quizId,
+          historyId,
+          report: {
+            strongAreas: reportData.strongAreas,
+            weakAreas: reportData.weakAreas,
+            recommendation: reportData.recommendation,
+          },
+          transcript,
+        },
       });
-      // Only a lesson that came from a path step moves the path, and only
-      // from the step it belonged to — the server refuses anything else.
-      if (activePathStep !== null) {
-        const position = await advancePath(activePathStep);
-        setCurrentStepIndex(position.stepIndex);
-        setActivePathStep(null);
-      }
+      if (completion.pathStepIndex !== null) setCurrentStepIndex(completion.pathStepIndex);
+
       setPendingHistoryId(null);
       setPendingQuizOutcome(null);
+      setLessonSession(null);
       setStage("report");
     } catch (err) {
       // The report itself may have succeeded; the retry button re-runs this
@@ -191,15 +229,15 @@ export default function Home() {
   function reset() {
     setStage("home");
     setLessonPlan(null);
-    setReport(null);
-    setCheckpointResults([]);
     setTranscript([]);
+    setReport(null);
     setError(null);
     setPendingTopic(undefined);
     setPendingDoc(null);
-    setActivePathStep(null);
     setPendingHistoryId(null);
     setPendingQuizOutcome(null);
+    setLessonSession(null);
+    setResumed(null);
   }
 
   async function handleSelectPathStep(stepTitle: string, index: number) {
@@ -225,6 +263,20 @@ export default function Home() {
           : stage === "home"
             ? "home"
             : "other";
+
+  if (restoring) {
+    return (
+      <AppShell active="home" onGoHome={reset} onGoProgress={() => {}} onGoProfile={() => {}} onGoSettings={() => {}}>
+        <div className="flex flex-col items-center justify-center min-h-[70vh] text-center space-y-4">
+          <div className="relative w-12 h-12">
+            <div className="absolute inset-0 rounded-full border-2 border-primary/20" />
+            <div className="absolute inset-0 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          </div>
+          <p className="text-sm text-on-surface-variant">Checking for a lesson in progress...</p>
+        </div>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell
@@ -287,13 +339,26 @@ export default function Home() {
         </div>
       )}
 
-      {stage === "teaching" && lessonPlan && (
-        <TeachingSession lessonPlan={lessonPlan} onComplete={handleTeachingComplete} />
+      {stage === "teaching" && lessonPlan && lessonSession && (
+        <TeachingSession
+          key={lessonSession.id}
+          lessonPlan={lessonPlan}
+          sessionId={lessonSession.id}
+          initialVersion={lessonSession.version}
+          initialSectionIndex={resumed?.currentSectionIndex ?? 0}
+          initialTranscript={resumed?.transcript ?? []}
+          onComplete={handleTeachingComplete}
+        />
       )}
 
-      {stage === "quiz" && lessonPlan && (
+      {stage === "quiz" && lessonPlan && lessonSession && (
         <div className="p-container-padding lg:p-8">
-          <QuizPanel lessonPlan={lessonPlan} language={lessonPlan.language} onFinished={handleQuizFinished} />
+          <QuizPanel
+            sessionId={lessonSession.id}
+            topic={lessonPlan.topic}
+            language={lessonPlan.language}
+            onFinished={handleQuizFinished}
+          />
         </div>
       )}
 

@@ -42,6 +42,50 @@ const attempts = new Map<string, Record<string, unknown>>();
 let shortAnswerGrades = 0;
 /** What the stubbed generator returns; a test sets it before creating a quiz. */
 let quizFixture: unknown[] = [];
+/** In-memory lesson sessions, keyed by id, with their owner. */
+interface StubSession {
+  userId: number;
+  state: Record<string, unknown>;
+}
+const sessions = new Map<string, StubSession>();
+/** What the stubbed planner returns; includes a checkpoint with its answer. */
+const PLAN_WITH_KEY = {
+  topic: "Algebra",
+  subject: "mathematics",
+  levelSummary: "",
+  totalEstimatedMinutes: 20,
+  language: "English",
+  sections: [
+    {
+      id: "s1",
+      title: "Slope",
+      narration: "Rise over run.",
+      bulletPoints: [],
+      visual: { type: "none" },
+      estimatedSeconds: 60,
+      conceptTags: ["slope"],
+      checkpoint: {
+        id: "cp1",
+        type: "short",
+        question: "What is slope?",
+        correctAnswer: "SECRET-CHECKPOINT-KEY",
+        conceptTag: "slope",
+      },
+    },
+    {
+      id: "s2",
+      title: "Intercept",
+      narration: "Where it crosses.",
+      bulletPoints: [],
+      visual: { type: "none" },
+      estimatedSeconds: 60,
+      conceptTags: ["intercept"],
+      checkpoint: null,
+    },
+  ],
+  finalQuizTopics: [],
+  sourceGrounded: false,
+};
 
 before(() => {
   mock.module(lib("auth.ts"), {
@@ -54,7 +98,7 @@ before(() => {
   });
   mock.module(lib("teachingAgent.ts"), {
     namedExports: {
-      planLesson: async () => ({ topic: "stub", sections: [] }),
+      planLesson: async () => PLAN_WITH_KEY,
       generateQuiz: async () => quizFixture,
       // Deliberately claims a score, so a test can prove the stored attempt
       // overrides it rather than the model deciding the learner's mark.
@@ -142,6 +186,83 @@ before(() => {
       deriveConceptMastery: () => ({ strongConcepts: [], weakConcepts: [] }),
     },
   });
+  mock.module(lib("lessonSessionStore.ts"), {
+    namedExports: {
+      createSession: async (session: Record<string, unknown>, userId: number) => {
+        // The unique index allows one live session per learner.
+        for (const [, existing] of sessions) {
+          if (existing.userId === userId && ["active", "paused"].includes(String(existing.state.status))) {
+            existing.state.status = "cancelled";
+          }
+        }
+        const state = {
+          ...session,
+          status: "active",
+          currentSectionIndex: 0,
+          checkpointResults: [],
+          transcript: [],
+          quizId: null,
+          pathTopic: session.pathTopic ?? null,
+          pathStepIndex: session.pathStepIndex ?? null,
+          version: 1,
+        };
+        sessions.set(String(session.id), { userId, state });
+        return state;
+      },
+      loadSession: async (id: string, userId: number) => {
+        const row = sessions.get(id);
+        return row && row.userId === userId ? row.state : null;
+      },
+      loadActiveSession: async (userId: number) => {
+        for (const [, row] of sessions) {
+          if (row.userId === userId && ["active", "paused"].includes(String(row.state.status))) {
+            return row.state;
+          }
+        }
+        return null;
+      },
+      saveSession: async (
+        state: Record<string, unknown>,
+        userId: number,
+        previousVersion: number
+      ) => {
+        const row = sessions.get(String(state.id));
+        if (!row || row.userId !== userId || row.state.version !== previousVersion) return null;
+        row.state = state;
+        return state;
+      },
+      completeLesson: async (
+        params: { sessionId: string; expectedVersion: number; quizId: string; history: { id: string } },
+        userId: number
+      ) => {
+        const row = sessions.get(params.sessionId);
+        if (!row || row.userId !== userId) return { conflict: "not-found" };
+        if (row.state.status === "completed") {
+          return {
+            session: row.state,
+            historyId: params.history.id,
+            pathStepIndex: row.state.pathStepIndex ?? null,
+            pathAdvanced: false,
+            replayed: true,
+          };
+        }
+        if (row.state.version !== params.expectedVersion) return { conflict: "stale-version" };
+        row.state = {
+          ...row.state,
+          status: "completed",
+          quizId: params.quizId,
+          version: Number(row.state.version) + 1,
+        };
+        return {
+          session: row.state,
+          historyId: params.history.id,
+          pathStepIndex: row.state.pathStepIndex ?? null,
+          pathAdvanced: row.state.pathStepIndex !== null,
+          replayed: false,
+        };
+      },
+    },
+  });
   mock.module(lib("db.ts"), {
     namedExports: { pool: { query: async () => ({ rows: [] }) } },
   });
@@ -157,6 +278,7 @@ beforeEach(async () => {
   attempts.clear();
   shortAnswerGrades = 0;
   quizFixture = [];
+  sessions.clear();
   const { resetRateLimits } = await import(lib("security/rateLimit.ts"));
   resetRateLimits();
 });
@@ -227,11 +349,13 @@ const matrix: { route: string; method: "GET" | "POST" | "PATCH" | "DELETE"; body
     route: "lesson/evaluate",
     method: "POST",
     body: {
-      question: { id: "q", type: "short", question: "?", conceptTag: "c" },
+      sessionId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      expectedVersion: 1,
+      sectionId: "s1",
       studentAnswer: "a",
     },
   },
-  { route: "lesson/quiz", method: "POST", body: { lessonPlan: validPlan } },
+  { route: "lesson/quiz", method: "POST", body: { sessionId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301" } },
   {
     route: "lesson/quiz/grade",
     method: "POST",
@@ -240,7 +364,31 @@ const matrix: { route: string; method: "GET" | "POST" | "PATCH" | "DELETE"; body
   {
     route: "lesson/report",
     method: "POST",
-    body: { lessonPlan: validPlan, quizId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301" },
+    body: {
+      sessionId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      quizId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+    },
+  },
+  { route: "lesson/session", method: "GET" },
+  {
+    route: "lesson/session",
+    method: "POST",
+    body: {
+      sessionId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      expectedVersion: 1,
+      command: { type: "pause" },
+    },
+  },
+  {
+    route: "lesson/complete",
+    method: "POST",
+    body: {
+      sessionId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      expectedVersion: 1,
+      quizId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      historyId: "3f2504e0-4f89-11d3-9a0c-0305e82c3302",
+      report: {},
+    },
   },
   {
     route: "lesson/translate-section",
@@ -491,9 +639,240 @@ test("setting a path clamps the index to a real step", async () => {
   assert.deepEqual(await response.json(), { ok: true, stepIndex: 0 });
 });
 
+// --- Durable lesson sessions ----------------------------------------------
+
+async function startLesson(pathStepIndex?: number) {
+  const { POST } = await loadRoute("lesson/plan");
+  const response = await POST(
+    post({
+      topic: "Algebra",
+      profile: validProfile,
+      ...(pathStepIndex === undefined
+        ? {}
+        : { pathTopic: "Algebra", pathStepIndex }),
+    })
+  );
+  assert.equal(response.status, 200);
+  return response.json();
+}
+
+test("planning a lesson opens a session and withholds the answer keys", async () => {
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  assert.ok(started.sessionId);
+  assert.equal(started.version, 1);
+
+  const serialised = JSON.stringify(started.plan);
+  assert.ok(!serialised.includes("correctAnswer"), serialised);
+  assert.ok(!serialised.includes("SECRET-CHECKPOINT-KEY"), "the checkpoint answer leaked");
+  // The question itself is still there to be asked.
+  assert.equal(started.plan.sections[0].checkpoint.question, "What is slope?");
+});
+
+test("a refresh finds the lesson still in progress", async () => {
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+
+  // What a reload does: ask the server what is running.
+  const { GET } = await loadRoute("lesson/session");
+  const resumed = await (await GET(get())).json();
+  assert.equal(resumed.session.id, started.sessionId);
+  assert.equal(resumed.session.status, "active");
+  assert.equal(resumed.session.currentSectionIndex, 0);
+  assert.ok(!JSON.stringify(resumed.session).includes("correctAnswer"));
+});
+
+test("another learner cannot see the lesson in progress", async () => {
+  session = { user: { id: "1" } };
+  await startLesson();
+  session = { user: { id: "2" } };
+  const { GET } = await loadRoute("lesson/session");
+  const body = await (await GET(get())).json();
+  assert.equal(body.session, null);
+});
+
+test("a command with a stale version is refused", async () => {
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  const { POST } = await loadRoute("lesson/session");
+
+  const first = await POST(
+    post({ sessionId: started.sessionId, expectedVersion: 1, command: { type: "advance", toSectionIndex: 1 } })
+  );
+  assert.equal(first.status, 200);
+  assert.equal((await first.json()).session.currentSectionIndex, 1);
+
+  // A background tab still on version 1 tries the same thing.
+  const stale = await POST(
+    post({ sessionId: started.sessionId, expectedVersion: 1, command: { type: "advance", toSectionIndex: 1 } })
+  );
+  assert.equal(stale.status, 409);
+});
+
+test("the section index cannot be pushed past the plan", async () => {
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  const { POST } = await loadRoute("lesson/session");
+  const response = await POST(
+    post({ sessionId: started.sessionId, expectedVersion: 1, command: { type: "advance", toSectionIndex: 5 } })
+  );
+  assert.equal(response.status, 409);
+});
+
+test("pausing twice is a no-op rather than an error", async () => {
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  const { POST } = await loadRoute("lesson/session");
+
+  const paused = await (
+    await POST(post({ sessionId: started.sessionId, expectedVersion: 1, command: { type: "pause" } }))
+  ).json();
+  assert.equal(paused.session.status, "paused");
+
+  const again = await (
+    await POST(post({ sessionId: started.sessionId, expectedVersion: 1, command: { type: "pause" } }))
+  ).json();
+  assert.equal(again.changed, false);
+  assert.equal(again.session.status, "paused");
+});
+
+test("starting a second lesson supersedes the first", async () => {
+  session = { user: { id: "1" } };
+  const first = await startLesson();
+  const second = await startLesson();
+  assert.notEqual(first.sessionId, second.sessionId);
+
+  const { GET } = await loadRoute("lesson/session");
+  const active = await (await GET(get())).json();
+  assert.equal(active.session.id, second.sessionId);
+});
+
+test("another learner cannot drive someone else's lesson", async () => {
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  session = { user: { id: "2" } };
+  const { POST } = await loadRoute("lesson/session");
+  const response = await POST(
+    post({ sessionId: started.sessionId, expectedVersion: 1, command: { type: "cancel" } })
+  );
+  assert.equal(response.status, 404);
+});
+
+// --- Checkpoints ----------------------------------------------------------
+
+test("a checkpoint is graded from the stored plan, not from the request", async () => {
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  const { POST } = await loadRoute("lesson/evaluate");
+
+  const response = await POST(
+    post({
+      sessionId: started.sessionId,
+      expectedVersion: 1,
+      sectionId: "s1",
+      studentAnswer: "rise over run",
+    })
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.recorded, true);
+  assert.equal(body.version, 2);
+
+  // The verdict is on the session, not tallied in the browser.
+  const { GET } = await loadRoute("lesson/session");
+  const resumed = await (await GET(get())).json();
+  assert.equal(resumed.session.checkpointResults.length, 1);
+  assert.equal(resumed.session.checkpointResults[0].sectionId, "s1");
+});
+
+test("a checkpoint for a section without one is a 404", async () => {
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  const { POST } = await loadRoute("lesson/evaluate");
+  const response = await POST(
+    post({ sessionId: started.sessionId, expectedVersion: 1, sectionId: "s2", studentAnswer: "x" })
+  );
+  assert.equal(response.status, 404);
+});
+
+// --- Completion -----------------------------------------------------------
+
+async function gradedQuiz(sessionId?: string): Promise<string> {
+  const quiz = await createQuiz(sessionId);
+  await (await loadRoute("lesson/quiz/grade")).POST(
+    post({ quizId: quiz.quizId, answers: [{ questionId: "q1", optionId: "o2" }] })
+  );
+  return quiz.quizId;
+}
+
+test("completing a lesson is one call, and safe to retry", async () => {
+  session = { user: { id: "1" } };
+  const started = await startLesson(0);
+  const quizId = await gradedQuiz(started.sessionId);
+  const { POST } = await loadRoute("lesson/complete");
+  const payload = {
+    sessionId: started.sessionId,
+    expectedVersion: 1,
+    quizId,
+    historyId: "3f2504e0-4f89-11d3-9a0c-0305e82c3399",
+    report: { strongAreas: ["slope"], weakAreas: [] },
+  };
+
+  const first = await POST(post(payload));
+  assert.equal(first.status, 200);
+  const firstBody = await first.json();
+  assert.equal(firstBody.replayed, false);
+  assert.equal(firstBody.pathAdvanced, true);
+
+  // The same completion arriving again — a retry after a dropped response —
+  // must not write a second history row or advance the path twice.
+  const retry = await POST(post(payload));
+  assert.equal(retry.status, 200);
+  const retryBody = await retry.json();
+  assert.equal(retryBody.replayed, true);
+  assert.equal(retryBody.pathAdvanced, false);
+});
+
+test("a lesson cannot be completed before its assessment is graded", async () => {
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  const quiz = await createQuiz(started.sessionId);
+  const response = await (await loadRoute("lesson/complete")).POST(
+    post({
+      sessionId: started.sessionId,
+      expectedVersion: 1,
+      quizId: quiz.quizId,
+      historyId: "3f2504e0-4f89-11d3-9a0c-0305e82c3398",
+      report: {},
+    })
+  );
+  assert.equal(response.status, 404);
+});
+
+test("the completion score comes from the graded attempt", async () => {
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  const quizId = await gradedQuiz(started.sessionId);
+  const body = await (
+    await (await loadRoute("lesson/complete")).POST(
+      post({
+        sessionId: started.sessionId,
+        expectedVersion: 1,
+        quizId,
+        historyId: "3f2504e0-4f89-11d3-9a0c-0305e82c3397",
+        report: {},
+      })
+    )
+  ).json();
+  // One right MCQ, one unanswered short question.
+  assert.equal(body.scorePercent, 50);
+});
+
 // --- Server-owned assessment (H10) ----------------------------------------
 
-async function createQuiz(): Promise<{ quizId: string; questions: { id: string }[] }> {
+async function createQuiz(
+  sessionId?: string
+): Promise<{ quizId: string; sessionId: string; questions: { id: string }[] }> {
   quizFixture = [
     {
       id: "ignored",
@@ -511,10 +890,12 @@ async function createQuiz(): Promise<{ quizId: string; questions: { id: string }
       conceptTag: "reasons",
     },
   ];
+  const lesson = sessionId ? { sessionId } : await startLesson();
   const { POST } = await loadRoute("lesson/quiz");
-  const response = await POST(post({ lessonPlan: validPlan, language: "English" }));
+  const owningSession = sessionId ?? lesson.sessionId;
+  const response = await POST(post({ sessionId: owningSession, language: "English" }));
   assert.equal(response.status, 200);
-  return response.json();
+  return { ...(await response.json()), sessionId: owningSession };
 }
 
 test("the generated quiz reaches the browser without its answer key", async () => {
@@ -577,7 +958,7 @@ test("another learner's quiz cannot be graded or reported on", async () => {
   assert.equal(grade.status, 404);
 
   const report = await (await loadRoute("lesson/report")).POST(
-    post({ lessonPlan: validPlan, quizId: quiz.quizId })
+    post({ sessionId: quiz.sessionId, quizId: quiz.quizId })
   );
   assert.equal(report.status, 404);
 });
@@ -586,7 +967,7 @@ test("a report cannot be produced before the assessment is graded", async () => 
   session = { user: { id: "1" } };
   const quiz = await createQuiz();
   const response = await (await loadRoute("lesson/report")).POST(
-    post({ lessonPlan: validPlan, quizId: quiz.quizId })
+    post({ sessionId: quiz.sessionId, quizId: quiz.quizId })
   );
   assert.equal(response.status, 404);
 });
@@ -599,7 +980,7 @@ test("the reported score comes from the graded attempt, not the model", async ()
   );
 
   const response = await (await loadRoute("lesson/report")).POST(
-    post({ lessonPlan: validPlan, quizId: quiz.quizId })
+    post({ sessionId: quiz.sessionId, quizId: quiz.quizId })
   );
   const body = await response.json();
   assert.equal(response.status, 200);
