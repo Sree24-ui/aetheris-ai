@@ -1,10 +1,31 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { GraphSpec } from "@/lib/types";
+import { tryCompileExpression } from "@/lib/security/mathExpression";
+
+/**
+ * Widest domain a generated graph may ask for. An LLM that emits
+ * xMin: -1e300 would otherwise produce a sample grid of meaningless values.
+ */
+const MAX_DOMAIN_SPAN = 1e6;
+
+/** Clamps a model-supplied domain to something plottable, or rejects it. */
+function safeDomain(graph: GraphSpec): { xMin: number; xMax: number } | null {
+  const { xMin, xMax } = graph;
+  if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) return null;
+  if (xMax <= xMin) return null;
+  if (xMax - xMin > MAX_DOMAIN_SPAN) return null;
+  return { xMin, xMax };
+}
 
 export default function GraphCanvas({ graph }: { graph: GraphSpec }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const domain = useMemo(() => safeDomain(graph), [graph]);
+  // Compiled once per spec rather than per render: the result is also what
+  // decides whether the canvas or the failure state is shown, and what the
+  // screen-reader description says.
+  const compiled = useMemo(() => tryCompileExpression(graph.expression), [graph.expression]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -26,15 +47,22 @@ export default function GraphCanvas({ graph }: { graph: GraphSpec }) {
     const textColor = tokenColor("--color-on-surface", "#d8e3fb");
     const errorColor = tokenColor("--color-error", "#ffb4ab");
 
-    const { expression, xMin, xMax } = graph;
-    let evalFn: (x: number) => number;
-    try {
-      evalFn = new Function("x", `"use strict"; return (${expression});`) as (x: number) => number;
-    } catch {
+    // C1: the expression is model-generated and can be steered by an uploaded
+    // document. It is parsed by an allow-listed mathematical grammar and
+    // evaluated by walking that AST — never compiled to JavaScript, which is
+    // what `new Function` used to do here.
+    if (!compiled.ok || !domain) {
       ctx.fillStyle = errorColor;
-      ctx.fillText("Invalid expression", 10, 20);
+      ctx.font = "12px sans-serif";
+      ctx.fillText(
+        compiled.ok ? "Graph domain is invalid" : `Invalid expression: ${compiled.error}`,
+        10,
+        20
+      );
       return;
     }
+    const evalFn = compiled.evaluate;
+    const { xMin, xMax } = domain;
 
     const samples: { x: number; y: number }[] = [];
     const steps = 400;
@@ -42,12 +70,7 @@ export default function GraphCanvas({ graph }: { graph: GraphSpec }) {
     let yMax = -Infinity;
     for (let i = 0; i <= steps; i++) {
       const x = xMin + ((xMax - xMin) * i) / steps;
-      let y: number;
-      try {
-        y = evalFn(x);
-      } catch {
-        y = NaN;
-      }
+      const y = evalFn(x);
       if (Number.isFinite(y)) {
         yMin = Math.min(yMin, y);
         yMax = Math.max(yMax, y);
@@ -114,14 +137,26 @@ export default function GraphCanvas({ graph }: { graph: GraphSpec }) {
     if (graph.label) {
       ctx.fillText(graph.label, padding, 16);
     }
-  }, [graph]);
+  }, [graph, compiled, domain]);
+
+  // A canvas is opaque to assistive technology, so the curve is also
+  // described in text: what is plotted, over which domain, and its label.
+  const description = compiled.ok && domain
+    ? `Graph of ${graph.label ? `${graph.label}: ` : ""}y = ${graph.expression}, ` +
+      `plotted for x from ${domain.xMin} to ${domain.xMax}.`
+    : "This graph could not be displayed because its definition was not valid.";
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={480}
-      height={280}
-      className="w-full max-w-xl mx-auto rounded bg-surface-container-lowest/50"
-    />
+    <figure className="w-full max-w-xl mx-auto">
+      <canvas
+        ref={canvasRef}
+        width={480}
+        height={280}
+        role="img"
+        aria-label={description}
+        className="w-full rounded bg-surface-container-lowest/50"
+      />
+      <figcaption className="sr-only">{description}</figcaption>
+    </figure>
   );
 }
