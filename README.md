@@ -137,7 +137,15 @@ directly through Node's type stripping). Run the checks with:
 
 ```bash
 npm run check      # lint + typecheck + tests
+npm test           # 415 tests, no framework — Node's own runner
+npm run migrate -- --status   # what the database has, and what is pending
+npm run retention             # uploads past their retention window (dry run)
 ```
+
+Operational runbooks — health, alerts, incident playbooks, backups, retention
+— are in [docs/OPERATIONS.md](docs/OPERATIONS.md). The audit remediation is
+tracked finding by finding in
+[docs/REMEDIATION-LEDGER.md](docs/REMEDIATION-LEDGER.md).
 
 `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` are optional — without them the app runs on email/password sign-in and hides the Google button.
 
@@ -182,6 +190,7 @@ where it is rendered.
 | Upload admission control | `src/lib/security/uploads.ts` | Size cap, magic-number check against the claimed extension, and archive entry-count / expanded-size / compression-ratio limits read from the zip directory before anything is decompressed. |
 | Verified database TLS | `db/ssl.mjs` | Remote Postgres connections verify the server certificate. The insecure escape hatch is refused when `NODE_ENV=production`. |
 | Server-owned grading | `src/lib/grading.ts`, `src/app/api/lesson/quiz/*` | The assessment's answer key never leaves the server. The browser receives questions with stable option ids and no key, submits option ids, and receives marks decided server-side; the report's score comes from the stored attempt, not from the model or the client. |
+| Server-owned lessons | `src/lib/lessonState.ts`, `src/lib/lessonSessionStore.ts` | The lesson plan — checkpoint answers included — lives in `lesson_sessions`. The browser gets a projection without the keys. Every command carries the session version it expected, checked both in the state machine and in the `UPDATE` predicate, so a stale tab or a delayed retry cannot move the lesson on. Completion is one transaction. |
 
 Two consequences worth knowing about:
 
@@ -210,8 +219,10 @@ authorization-matrix and cross-tenant cases.
 - **Free-tier LLM latency/flakiness**: the default provider (`LLM_PROVIDER=groq`) runs on a free, shared pool and can be slow or occasionally time out under load, despite the app's retry/fallback/timeout handling. Switching to `gemini`, or pointing `GROQ_MODEL`/`GEMINI_MODEL` at a paid tier, removes this.
 - **TTS voice availability**: narration voices come from the browser/OS, not the app. On a stock macOS install, 5 of the 22 offered languages (Marathi, Gujarati, Malayalam, Punjabi, Urdu) have no installed voice. The app detects this and says so up front instead of running a silent lesson, but it cannot supply the voice — that needs a server-side TTS service.
 - **Video export** uses tab capture (`getDisplayMedia`), which requires the user to grant screen-share permission each time and to enable "share tab audio" — it does not run headless/automatically.
-- **No mid-lesson resume**: the in-progress lesson lives in browser state, so refreshing mid-lesson restarts that lesson. Completed history and progress are stored server-side against the account and are unaffected.
 - **PPTX/PDF parsing is text-only**: embedded images/diagrams in source material are not extracted or shown; only text content is used for grounding.
 - **Interface preferences are per-device**: accent, background density, motion and narration voice are stored in `localStorage` rather than on the account, so they don't follow a learner to another browser or machine.
 - **Partial test coverage**: security-critical logic (validators, schemas, parsers, route authorization) has automated regression tests. Component, browser and load tests are not written yet, so UI behaviour is still verified manually.
-- **Ingestion is synchronous**: parsing, chunking and embedding all run inside the upload request. Limits keep it bounded, but a large document on a cold start can still approach the 60-second function ceiling.
+- **Ingestion has no worker**: indexing is a durable, checkpointed job, but its slices are driven by the browser polling while it waits rather than by a queue consumer. Closing the tab pauses indexing rather than losing it; re-uploading resumes from the checkpoint.
+- **English-oriented embeddings**: the default embedding model is English-oriented while the product teaches in 22 languages. The full-text half of retrieval is language-neutral, and every vector records the model that produced it, so switching is a supported data migration rather than a silent corruption — but it has not been switched.
+- **Vector search runs in Node**: similarity is computed over one document's chunks in the application rather than in Postgres. `db/optional/0001_pgvector.sql` is the upgrade and needs a decision about the database extension.
+- **No password reset or email verification**: both need an email provider. Data export and account deletion do exist.

@@ -4,19 +4,23 @@ Tracks every finding in `Aetheris_AI_Project_Audit_Report.md` against the code
 as it stands. A finding is only marked **Fixed** when its acceptance test
 passes; "the code looks right" is not a status.
 
-**Progress: Phases 0, 1 and 2 complete; Phase 3 in progress.** Security
-containment, the reliable learning workflow, and scalable AI and retrieval are
-closed apart from two items that need an infrastructure decision from you (M4,
-M6 — see "Awaiting your approval"). Everything still open carries its current
-status and the exact next step.
+**Progress: all five phases worked through.** Every finding is either closed
+with a regression test, closed as far as it can be without a decision from
+you, or explicitly narrowed to the part that needs one. Nothing is left
+undocumented.
+
+The remaining work falls into two piles: things that need an infrastructure
+or product decision (listed under "Awaiting your decision"), and verification
+layers that need a browser — component, accessibility and load tests — which
+is the honest limit of what could be established from here.
 
 ## Verification commands
 
 ```bash
 npm run lint       # eslint            -> clean
 npx tsc --noEmit   # TypeScript strict -> clean
-npm test           # 408 tests         -> 408 pass, 0 fail
-npm run build      # production build  -> compiled, 26 routes
+npm test           # 415 tests         -> 415 pass, 0 fail
+npm run build      # production build  -> compiled, 27 routes
 npm run check      # all three of the above in sequence
 ```
 
@@ -28,10 +32,9 @@ none are being hidden.
 
 | Status | Count | IDs |
 | --- | --- | --- |
-| Fixed, with regression tests | 23 | C1, C2, H1, H2, H3, H4, H5, H6, H7, H8, H9, H10, H11, M1, M2, M3, M5, M7, M8, M9, M10, M11, M15 |
-| Partially fixed | 3 | H12, M12, M16 |
+| Fixed, with regression tests | 24 | C1, C2, H1, H2, H3, H4, H5, H6, H7, H8, H9, H10, H11, M1, M2, M3, M5, M7, M8, M9, M10, M11, M15, L2 |
+| Fixed as far as a decision allows | 4 | H12, M12, M13, M16 |
 | Awaiting your decision | 2 | M4, M6 |
-| Confirmed, still open — Phase 3/4 | 2 | M13, L2 |
 | Already accurate / closed | 2 | M14, L1 |
 
 All 32 findings (C1–C2, H1–H12, M1–M16, L1–L2) are accounted for above.
@@ -447,9 +450,16 @@ All 32 findings (C1–C2, H1–H12, M1–M16, L1–L2) are accounted for above.
   with type stripping; `tests/register.mjs` maps the `@/` alias and
   extensionless imports), 239 tests, and `npm run check` running lint +
   typecheck + tests together.
-- **Still open:** no CI workflow, no React error boundaries, no component,
-  browser, accessibility or load tests, no model contract tests against a real
-  provider.
+- **Also done:** `.github/workflows/ci.yml` runs lint, typecheck, the full
+  suite (including every security regression) and the production build on each
+  push and pull request, with an advisory `npm audit`. Two React error
+  boundaries replaced the blank screen an exception used to produce, showing
+  the digest that ties a learner's report to the server log line. `GET
+  /api/health` reports database latency and per-backend circuit state,
+  authenticated because it names which backends are failing.
+- **Still open:** component and browser tests, automated accessibility checks,
+  load and chaos tests, and model contract tests against a real provider. All
+  four need either a browser harness or a provider budget.
 
 ---
 
@@ -468,8 +478,8 @@ All 32 findings (C1–C2, H1–H12, M1–M16, L1–L2) are accounted for above.
 | M9 | Numeric config parser lacks integer and upper bounds | **Fixed** | `src/lib/appConfig.ts` now has `parseNumber`/`count`/`duration`/`ratio` with explicit domains. `MODEL_TEMPERATURE=0` is now accepted (it was silently replaced by 0.7); every token budget has a ceiling; `CHUNK_OVERLAP` falls back when it is not smaller than the chunk size. |
 | M10 | No document deletion, retention or cleanup | **Fixed** | `GET`/`DELETE /api/documents` list and delete a learner's uploads, scoped by session — chunks and embeddings go with the row through `ON DELETE CASCADE`. "Remove" in the setup form now actually deletes, and reports failure instead of clearing the selection and leaving the upload stored. `npm run retention` sweeps documents past `DOCUMENT_RETENTION_DAYS` (dry run by default, `--apply` to delete). Deliberately not self-scheduled: where a recurring job runs is an infrastructure decision. 6 tests, including cross-tenant delete. |
 | M11 | VideoRecorder track/object-URL/duration cleanup | **Fixed** | Unmount stops an in-flight recording and releases the capture tracks, so the browser's "sharing this tab" indicator no longer outlives the component. Object URLs are revoked before a new recording replaces one and on unmount; the chunk array is dropped once the blob exists, instead of holding the recording twice. Caps at 30 minutes and 512 MB, both of which stop cleanly and keep what was captured, with a live counter. |
-| M12 | Accessibility gaps | Partially fixed | Graphs now carry a text alternative (`role="img"` plus a description of expression, domain and label) and diagrams carry an accessible name; a rejected diagram is announced as a note rather than being silent. Labels, focus management, live regions and reduced-motion remain Phase 3. |
-| M13 | Password reset, verification, linking, export, deletion | Open (Phase 3) | |
+| M12 | Accessibility gaps | **Fixed in code; browser verification outstanding** | Graphs carry a text alternative describing expression, domain and label; diagrams carry an accessible name and announce a rejection rather than being silent. `prefers-reduced-motion` now stops every animation including the confetti and the avatar, which were exempt. A visible focus ring is restored globally — several controls set `focus:outline-none` and replaced it with a colour change that does not survive a high-contrast setting. Sign-in, sign-up and setup labels are programmatically associated; icon-only buttons have names; captions announce as they change; asynchronous failures are `role="alert"`; lesson text carries the language it is written in, so a screen reader does not pronounce Hindi with English phonetics; leaving mid-lesson is confirmed. **Still outstanding:** automated axe checks and manual keyboard/screen-reader passes, both of which need a browser test harness. |
+| M13 | Password reset, verification, linking, export, deletion | **Export and deletion fixed; the rest needs an email provider** | `GET /api/account/export` returns everything the account holds as one JSON document (embeddings excluded — derived, enormous, meaningless outside this app's model). `DELETE /api/account` removes the `users` row and everything cascades from it, with no soft delete, and requires the learner to type their own address back. Password reset and email verification cannot exist without an email provider — see "Awaiting your decision". |
 | M14 | README does not match the implementation | Closed | Already corrected by commit `54ea286` before this session; verified — no OpenRouter, filesystem-storage or localStorage-memory references remain. A Security Model section and the new commands were added. |
 | M15 | Migrations not versioned or constraint-rich | **Fixed** | `db/schema.sql` became `db/migrations/0001_baseline.sql`; `db/migrate.mjs` now applies numbered files once each, in one transaction apiece, recorded in `schema_migrations` with a checksum. Editing an applied migration is an error, not a silent no-op. `0003_constraints.sql` adds score-range, non-blank-identifier, non-negative-index and non-empty-path checks — all `NOT VALID`, so they bind new writes without a migration deciding what to do about pre-existing rows. 7 tests cover the planner. |
 | M16 | Beta auth dependency, unpinned runtime | Partially fixed | `next-auth` pinned to the exact `5.0.0-beta.32` (no upgrade, just no drift). `engines` now pins Node ≥ 22.6 and npm ≥ 10. A tested upgrade plan for Auth.js v5 stable is still outstanding. |
@@ -498,16 +508,26 @@ All 32 findings (C1–C2, H1–H12, M1–M16, L1–L2) are accounted for above.
 has and what is pending; `npm run migrate` applies the rest. Run it against
 staging before production.
 
-## Awaiting your approval
+## Awaiting your decision
 
-1. **pgvector** (M4) — requires `CREATE EXTENSION vector` on your database and
-   re-embedding existing documents. Not run; no remote database was touched.
-2. **Embedding model change** (M6) — a multilingual model invalidates every
-   stored vector, so it is a data migration.
-3. **Object storage and a job queue** (H11) — an infrastructure provider
-   choice. The interface can be built with a local adapter first.
-4. **`SAMPLE BUTTON`** (L2) — implement or remove.
-5. **`git-random.sh`** — not deleted, because it could not be proven unused
+Each of these is written and ready except for the decision itself.
+
+1. **pgvector** (M4) — `db/optional/0001_pgvector.sql` has the extension,
+   column, backfill and HNSW index with its rollback. It needs
+   `CREATE EXTENSION vector` and privileges the app's role may not have. Not
+   applied anywhere; no remote database was touched at any point.
+2. **A multilingual embedding model** (M6) — one env var, but it invalidates
+   every stored vector, so it is a data migration: existing documents return
+   nothing from the vector arm until re-uploaded. The lexical arm keeps
+   working throughout, which is why this is now safe to do at all.
+3. **Object storage and a real queue** (H11) — ingestion is durable,
+   checkpointed and resumable; what is missing is a worker to drive it, so the
+   client polls instead. Swapping the trigger touches one caller.
+4. **An email provider** (M13) — password reset and email verification cannot
+   exist without one.
+5. **A metrics and log backend** — the signals are emitted and documented in
+   `docs/OPERATIONS.md`; nothing collects them.
+6. **`git-random.sh`** — not deleted, because it could not be proven unused
    (it is invoked by hand). It was rewritten to require an explicit identity
    and to pass it with `git -c` for that one commit, so it no longer randomises
    and no longer rewrites the checkout's `user.name`/`user.email`. Say the word
@@ -515,12 +535,19 @@ staging before production.
 
 ## Next implementation step
 
-Phase 3, in this order:
+The code-level findings are closed. What is left is verification that needs a
+browser, and the decisions above.
 
-1. **L2** — the `SAMPLE BUTTON` placeholder.
-2. **M12** — WCAG 2.2 AA: label association, focus management, live regions,
-   visible focus, reduced motion, correct language metadata.
-3. **M13** — data export and account deletion (both possible now); password
-   reset and email verification need an email provider decision.
-4. **H12/Phase 4** — CI gates, React error boundaries, a health endpoint, and
-   the operational documentation.
+1. **A browser test harness** (Playwright is the obvious choice) for the
+   critical journeys: sign-in, setup, lesson lifecycle, refresh-and-resume,
+   chat, quiz, report, history, path progression, upload and deletion. This is
+   also what unblocks automated `axe` checks, which is the outstanding half of
+   M12.
+2. **Component tests** for the renderers — graph, Mermaid, quiz, speech,
+   upload UI — which is where the DOM-level half of the H1 sanitiser is
+   currently covered only by DOMPurify's own suite.
+3. **Load and chaos tests** for planning, chat, upload, ingestion slices and
+   database pressure.
+4. **A multilingual retrieval and teaching evaluation set**, which needs a
+   gold dataset and a provider budget to run against.
+5. **A tested Auth.js v5 upgrade** once it leaves beta (M16).
