@@ -22,7 +22,7 @@ export default function CodeBlock({ code, language }: { code: string; language?:
   }, [code, lang]);
 
   return (
-    <pre className="rounded-lg overflow-x-auto text-sm !bg-[#1e1e2e] p-4">
+    <pre className="rounded-lg overflow-x-auto text-sm bg-[#1e1e2e]! p-4">
       <code ref={ref} className={`language-${lang}`}>
         {code}
       </code>

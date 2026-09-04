@@ -1,7 +1,8 @@
-"use client";
-
 /**
  * Interface preferences that change how the app looks and moves.
+ *
+ * Isomorphic on purpose: no `"use client"` directive, so the root layout can
+ * import ACCENTS on the server to inline the pre-paint script below.
  *
  * Stored locally rather than on the profile for the same reason voice prefs
  * are: they describe the device you're sitting at. Motion in particular is an

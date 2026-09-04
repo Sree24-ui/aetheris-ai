@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import {
   applyAppearance,
   getAppearanceServerSnapshot,
@@ -9,12 +9,12 @@ import {
 } from "@/lib/appearance";
 
 /**
- * Applies the stored interface preferences to <html> on every page, including
- * the marketing and auth screens. Renders nothing.
+ * Keeps <html> in sync with the stored interface preferences. Renders nothing.
  *
- * The write happens during render rather than in an effect so the accent is in
- * place before the first paint after hydration; without that the app flashes
- * the default lavender for a frame on every navigation.
+ * The *initial* application happens before paint, in the bootstrap script the
+ * root layout inlines — doing it here during render made every one of those
+ * attributes a hydration mismatch. This effect only has to cover later changes,
+ * which is why writing after paint is fine.
  */
 export default function AppearanceEffect() {
   const appearance = useSyncExternalStore(
@@ -22,6 +22,8 @@ export default function AppearanceEffect() {
     getAppearanceSnapshot,
     getAppearanceServerSnapshot
   );
-  if (typeof document !== "undefined") applyAppearance(appearance);
+  useEffect(() => {
+    applyAppearance(appearance);
+  }, [appearance]);
   return null;
 }

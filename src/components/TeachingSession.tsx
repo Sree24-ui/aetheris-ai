@@ -87,7 +87,7 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
   const [followUps, setFollowUps] = useState<string[]>([]);
   const [unreadChat, setUnreadChat] = useState(0);
 
-  const { speak, stop, pause, resume, mouthOpen, state: speechState, voicesForLanguage } =
+  const { speak, stop, pause, resume, mouthOpen, state: speechState, voicesForLanguage, canNarrate } =
     useSpeech(voicePrefs);
 
   const sectionsRef = useRef(sections);
@@ -433,6 +433,16 @@ export default function TeachingSession({ lessonPlan, onComplete }: Props) {
         )}
         {translateError && !translating && (
           <div className="text-xs text-error">{translateError}</div>
+        )}
+
+        {!canNarrate(language) && (
+          <div className="flex items-start gap-2 text-xs text-tertiary-fixed-dim">
+            <Icon name="voice_over_off" className="text-[16px] shrink-0 mt-px" />
+            <span>
+              No {language} voice on this device — the lesson is running without narration.
+              Captions, diagrams and questions are unaffected.
+            </span>
+          </div>
         )}
 
         {/* Controls sit in normal flow below the stage rather than absolutely

@@ -31,7 +31,9 @@ const LANGUAGE_TO_BCP47: Record<string, string> = {
   kannada: "kn-IN",
   malayalam: "ml-IN",
   punjabi: "pa-IN",
-  urdu: "ur-IN",
+  // ur-PK, not ur-IN: no speech engine ships an Urdu-India voice, and
+  // Windows/Android ship Urdu as ur-PK. The prefix fallback covers either.
+  urdu: "ur-PK",
   korean: "ko-KR",
   italian: "it-IT",
 };
@@ -43,10 +45,43 @@ export function languageToBCP47(language: string): string {
 
 export type SpeechState = "idle" | "speaking" | "paused";
 
+/**
+ * The browser's installed voices. Chrome populates the list asynchronously and
+ * returns an empty array on the first call, so every consumer has to listen for
+ * `voiceschanged` — this keeps that in one place.
+ */
+export function useVoices(): SpeechSynthesisVoice[] {
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    const load = () => setVoices(window.speechSynthesis.getVoices());
+    load();
+    window.speechSynthesis.addEventListener("voiceschanged", load);
+    return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
+  }, []);
+  return voices;
+}
+
+/**
+ * Whether this device can actually narrate a teaching language.
+ *
+ * The app offers 22 languages, but speech voices come from the operating
+ * system, and a typical macOS install has none for Marathi, Gujarati,
+ * Malayalam, Punjabi or Urdu. Without a voice the browser does not error — it
+ * silently skips the unpronounceable text and fires `onend` almost
+ * immediately, so a lesson would race through its sections looking like it had
+ * been taught. Callers use this to say so up front instead.
+ */
+export function hasVoiceFor(language: string, voices: SpeechSynthesisVoice[]): boolean {
+  if (voices.length === 0) return true; // Not loaded yet — don't warn prematurely.
+  const prefix = languageToBCP47(language).split("-")[0].toLowerCase();
+  return voices.some((v) => v.lang.toLowerCase().startsWith(prefix));
+}
+
 export function useSpeech(prefs: VoicePrefs = DEFAULT_VOICE_PREFS) {
   const [state, setState] = useState<SpeechState>("idle");
   const [mouthOpen, setMouthOpen] = useState(false);
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const voices = useVoices();
   // Read through a ref so changing a slider mid-lesson does not give `speak`
   // a new identity and re-trigger the narration effect that depends on it.
   // Synced in an effect rather than during render, which React forbids.
@@ -58,14 +93,6 @@ export function useSpeech(prefs: VoicePrefs = DEFAULT_VOICE_PREFS) {
   const mouthTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finishRef = useRef<(() => void) | null>(null);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    const load = () => setVoices(window.speechSynthesis.getVoices());
-    load();
-    window.speechSynthesis.addEventListener("voiceschanged", load);
-    return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
-  }, []);
 
   const pickVoice = useCallback(
     (bcp47: string): SpeechSynthesisVoice | undefined => {
@@ -210,5 +237,6 @@ export function useSpeech(prefs: VoicePrefs = DEFAULT_VOICE_PREFS) {
     voices,
     voicesForLanguage,
     voicesReady: voices.length > 0,
+    canNarrate: (language: string) => hasVoiceFor(language, voices),
   };
 }

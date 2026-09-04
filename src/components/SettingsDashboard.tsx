@@ -331,7 +331,7 @@ export default function SettingsDashboard({ onGoProfile }: { onGoProfile: () => 
             </div>
 
             <div className="w-full rounded-[2rem] p-8 relative overflow-hidden bg-surface-container-low/40 border border-white/5 flex flex-wrap items-center justify-between gap-6">
-              <div className="ambient-blob blob-1 !absolute !opacity-40" aria-hidden />
+              <div className="ambient-blob blob-1 absolute! opacity-40!" aria-hidden />
               <div className="relative z-10 flex items-center gap-4">
                 <span className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center animate-float">
                   <Icon name="visibility" className="text-primary" />
@@ -369,6 +369,10 @@ export default function SettingsDashboard({ onGoProfile }: { onGoProfile: () => 
               <label className="flex flex-col gap-2">
                 <span className="font-label-caps text-label-caps uppercase tracking-wider text-on-surface-variant">
                   Voice
+                </span>
+                <span className="font-body-md text-sm text-on-surface-variant opacity-70 normal-case tracking-normal">
+                  A voice is only used for lessons in a language it can speak. Pick a Spanish voice
+                  and a Hindi lesson still gets a Hindi one.
                 </span>
                 <select
                   value={voice.voiceURI ?? ""}

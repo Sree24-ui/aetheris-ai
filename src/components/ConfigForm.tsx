@@ -4,6 +4,7 @@ import { useState } from "react";
 import Icon from "./Icon";
 import type { LearnerProfile, DocumentSummary } from "@/lib/types";
 import { LANGUAGES } from "@/lib/languages";
+import { hasVoiceFor, useVoices } from "@/hooks/useSpeech";
 import { DOCUMENT_ACCEPT_ATTRIBUTE } from "@/lib/appConfig";
 
 const LEVELS: { value: LearnerProfile["level"]; label: string; icon: string }[] = [
@@ -43,6 +44,7 @@ export default function ConfigForm({
   onLearningPath,
   onBack,
 }: Props) {
+  const voices = useVoices();
   const [instruction, setInstruction] = useState("");
   const [parsing, setParsing] = useState(false);
   const [topic, setTopic] = useState(initialTopic ?? "");
@@ -354,6 +356,16 @@ export default function ConfigForm({
                   <option className="bg-surface-container-high" key={l} value={l}>{l}</option>
                 ))}
               </select>
+              {!hasVoiceFor(language, voices) && (
+                <p className="flex items-start gap-2 text-xs text-tertiary-fixed-dim">
+                  <Icon name="voice_over_off" className="text-[16px] shrink-0 mt-px" />
+                  <span>
+                    This device has no {language} speech voice, so the lesson will play without
+                    narration. Slides, diagrams, captions and the quiz all still work. Adding a{" "}
+                    {language} voice in your system&apos;s speech settings enables it.
+                  </span>
+                </p>
+              )}
               <input
                 className="rounded-xl border border-white/10 bg-surface-container/50 px-4 py-3 text-sm text-on-surface placeholder-outline-variant focus:outline-none focus:border-primary/40"
                 value={objective}
