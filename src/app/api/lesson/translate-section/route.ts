@@ -1,19 +1,19 @@
-import { NextRequest, NextResponse } from "next/server";
-import { toErrorResponse } from "@/lib/llmError";
+import { defineRoute } from "@/lib/apiGuard";
+import { translateSectionRequestSchema } from "@/lib/schemas/requests";
 import { translateSection } from "@/lib/teachingAgent";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json();
-    const section = await translateSection(body);
-    return NextResponse.json(section);
-  } catch (err) {
-    console.error(err);
-    // Preserves the real cause (quota, bad key, timeout) and its status code
-    // instead of flattening every failure into an opaque 500.
-    const { body, status } = toErrorResponse(err);
-    return NextResponse.json(body, { status });
-  }
-}
+export const POST = defineRoute(
+  {
+    name: "lesson-translate",
+    schema: translateSectionRequestSchema,
+    maxBytes: 256 * 1024,
+    // A language switch fans out one request per section, so this limit has
+    // to clear a whole lesson's worth in a minute while still bounding abuse.
+    rateLimit: { limit: 40, windowMs: 60_000 },
+    modelBudget: true,
+  },
+  ({ body }) => translateSection(body)
+);

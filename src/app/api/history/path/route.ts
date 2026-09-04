@@ -1,24 +1,22 @@
-import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { defineRoute } from "@/lib/apiGuard";
+import { RATE_LIMITS } from "@/lib/security/rateLimit";
+import { setPathRequestSchema } from "@/lib/schemas/requests";
 import { setCurrentPathForUser } from "@/lib/serverMemory";
-import type { LearningPath } from "@/lib/types";
 
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+export const POST = defineRoute(
+  {
+    name: "path-set",
+    schema: setPathRequestSchema,
+    maxBytes: 64 * 1024,
+    rateLimit: RATE_LIMITS.standard,
+  },
+  async ({ body, userId }) => {
+    // H8: the index is clamped to a real step of the path being saved, so a
+    // crafted request cannot park progress past the end of the curriculum.
+    const stepIndex = Math.min(body.stepIndex, body.path.steps.length - 1);
+    await setCurrentPathForUser(userId, body.path, stepIndex);
+    return { ok: true, stepIndex };
   }
-  try {
-    const { path, stepIndex }: { path: LearningPath; stepIndex: number } = await req.json();
-    if (!path?.topic || !Array.isArray(path?.steps)) {
-      return NextResponse.json({ error: "Invalid learning path" }, { status: 400 });
-    }
-    await setCurrentPathForUser(Number(session.user.id), path, stepIndex ?? 0);
-    return NextResponse.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    return NextResponse.json({ error: "Failed to save learning path" }, { status: 500 });
-  }
-}
+);

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Icon from "./Icon";
 import { loadMemory } from "@/lib/memory";
+import { DOCUMENT_ACCEPT_ATTRIBUTE } from "@/lib/appConfig";
 import type { DocumentSummary, LearnerMemory } from "@/lib/types";
 
 const EMPTY_MEMORY: LearnerMemory = { history: [], weakConcepts: [], strongConcepts: [] };
@@ -40,7 +41,10 @@ export default function HomeDashboard({ onProceed, onRevise }: Props) {
   async function handleUploadClick() {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".pdf,.docx,.pptx,.txt,.md";
+    // L1: derived from the same list the parser and the upload route use, so
+    // the picker cannot offer a format the server will reject (or hide one it
+    // accepts). ConfigForm already read the shared value; this copy did not.
+    input.accept = DOCUMENT_ACCEPT_ATTRIBUTE;
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;

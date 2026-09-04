@@ -7,11 +7,16 @@ import { getProviders, signIn } from "next-auth/react";
 import AuthLayout from "@/components/AuthLayout";
 import GoogleIcon from "@/components/GoogleIcon";
 import Icon from "@/components/Icon";
+import { safeCallbackPath, safeCallbackUrl } from "@/lib/security/callbackUrl";
 
 function SignInForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get("callbackUrl") || "/app";
+  // C2: `?callbackUrl=` is attacker-controlled — a crafted sign-in link used
+  // to be able to bounce the freshly-authenticated learner anywhere. The same
+  // validator runs on the server (see proxy.ts), so both sides agree on what
+  // an approved internal destination is.
+  const callbackUrl = safeCallbackPath(searchParams.get("callbackUrl"));
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -142,7 +147,11 @@ function SignInForm() {
           onClick={async () => {
             setGoogleLoading(true);
             try {
-              await signIn("google", { callbackUrl });
+              // NextAuth needs an absolute URL here; the origin always comes
+              // from this browsing context, never from the query string.
+              await signIn("google", {
+                callbackUrl: safeCallbackUrl(callbackUrl, window.location.origin),
+              });
             } catch {
               // Google is only configured in preview/production; locally the
               // redirect fails and the button would otherwise spin forever.

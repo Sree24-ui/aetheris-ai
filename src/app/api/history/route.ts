@@ -1,33 +1,26 @@
-import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { defineRoute } from "@/lib/apiGuard";
+import { RATE_LIMITS } from "@/lib/security/rateLimit";
+import { historyEntryRequestSchema } from "@/lib/schemas/requests";
 import { loadMemoryForUser, addHistoryEntryForUser } from "@/lib/serverMemory";
-import type { LearnerHistoryEntry } from "@/lib/types";
 
 export const runtime = "nodejs";
 
-export async function GET() {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  }
-  const memory = await loadMemoryForUser(Number(session.user.id));
-  return NextResponse.json(memory);
-}
+export const GET = defineRoute(
+  { name: "history-read", rateLimit: RATE_LIMITS.standard },
+  ({ userId }) => loadMemoryForUser(userId)
+);
 
-export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+export const POST = defineRoute(
+  {
+    name: "history-write",
+    schema: historyEntryRequestSchema,
+    maxBytes: 1024 * 1024,
+    rateLimit: RATE_LIMITS.standard,
+  },
+  async ({ body, userId }) => {
+    // The row is written against the session's user id; nothing in the body
+    // can name a different owner.
+    await addHistoryEntryForUser(userId, body);
+    return { ok: true, id: body.id };
   }
-  try {
-    const entry: LearnerHistoryEntry = await req.json();
-    if (!entry.id || !entry.topic || !entry.date) {
-      return NextResponse.json({ error: "Missing required history fields" }, { status: 400 });
-    }
-    await addHistoryEntryForUser(Number(session.user.id), entry);
-    return NextResponse.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    return NextResponse.json({ error: "Failed to save history entry" }, { status: 500 });
-  }
-}
+);

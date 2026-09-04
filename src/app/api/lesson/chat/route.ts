@@ -1,44 +1,25 @@
-import { NextRequest, NextResponse } from "next/server";
 import { MAX_FOLLOW_UPS } from "@/lib/appConfig";
-import { toErrorResponse } from "@/lib/llmError";
+import { defineRoute } from "@/lib/apiGuard";
+import { RATE_LIMITS } from "@/lib/security/rateLimit";
+import { lessonChatRequestSchema } from "@/lib/schemas/requests";
 import { answerQuestion } from "@/lib/teachingAgent";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json();
-    const { question, lessonTopic, sectionTitle, sectionContext, language, history } = body as {
-      question?: string;
-      lessonTopic?: string;
-      sectionTitle?: string;
-      sectionContext?: string;
-      language?: string;
-      history?: { role: "ai" | "user"; text: string }[];
-    };
-
-    if (!question || typeof question !== "string" || !question.trim()) {
-      return NextResponse.json({ error: "Missing question" }, { status: 400 });
-    }
-
-    const result = await answerQuestion({
-      question: question.trim(),
-      lessonTopic: lessonTopic ?? "",
-      sectionTitle: sectionTitle ?? "",
-      sectionContext: sectionContext ?? "",
-      language: language ?? "English",
-      history: Array.isArray(history) ? history : [],
-    });
-
-    return NextResponse.json({
+export const POST = defineRoute(
+  {
+    name: "lesson-chat",
+    schema: lessonChatRequestSchema,
+    maxBytes: 256 * 1024,
+    rateLimit: RATE_LIMITS.model,
+    modelBudget: true,
+  },
+  async ({ body }) => {
+    const result = await answerQuestion(body);
+    return {
       answer: result.answer,
-      suggestedFollowUps: Array.isArray(result.suggestedFollowUps)
-        ? result.suggestedFollowUps.slice(0, MAX_FOLLOW_UPS)
-        : [],
-    });
-  } catch (err) {
-    console.error(err);
-    const { body, status } = toErrorResponse(err);
-    return NextResponse.json(body, { status });
+      suggestedFollowUps: result.suggestedFollowUps.slice(0, MAX_FOLLOW_UPS),
+    };
   }
-}
+);

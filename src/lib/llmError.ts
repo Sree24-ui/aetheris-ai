@@ -292,9 +292,17 @@ export function toErrorResponse(err: unknown): {
       status: err.httpStatus,
     };
   }
-  const message = err instanceof Error ? err.message : String(err);
+  // Anything that is not a typed LlmError is a bug, a driver failure or a
+  // database error. Its message can name tables, file paths or connection
+  // details, so it is logged and replaced rather than returned. This used to
+  // pass `err.message` straight through to the browser.
+  console.error("[llm] unhandled error", err);
   return {
-    body: { error: message || "Something went wrong.", kind: "unknown", retryable: false },
+    body: {
+      error: "Something went wrong on our side. Try again in a moment.",
+      kind: "unknown",
+      retryable: true,
+    },
     status: 500,
   };
 }

@@ -1,8 +1,14 @@
-import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
-import { auth } from "@/lib/auth";
+import { ApiError, defineRoute } from "@/lib/apiGuard";
 import { MIN_EXTRACTED_CHARS } from "@/lib/appConfig";
-import { toErrorResponse } from "@/lib/llmError";
+import { RATE_LIMITS } from "@/lib/security/rateLimit";
+import {
+  MAX_EXTRACTED_CHARS,
+  MAX_UPLOAD_BYTES,
+  UploadRejected,
+  admitUpload,
+} from "@/lib/security/uploads";
+import { LlmError } from "@/lib/llmError";
 import { parseDocument } from "@/lib/documentParser";
 import { ingestDocument } from "@/lib/vectorStore";
 import { extractConcepts } from "@/lib/teachingAgent";
@@ -14,35 +20,66 @@ export const runtime = "nodejs";
 // this route's own timeout fires, leaving nothing useful in the logs.
 export const maxDuration = 60;
 
-export async function POST(req: NextRequest) {
-  try {
-    // Middleware already rejects anonymous callers, but the owning user id is
-    // needed here to scope the stored document, so resolve the session rather
-    // than trusting anything in the request body.
-    const session = await auth();
-    const userId = Number(session?.user?.id);
-    if (!Number.isFinite(userId)) {
-      return NextResponse.json({ error: "You need to be signed in to upload.", kind: "auth" }, { status: 401 });
+export const POST = defineRoute(
+  {
+    name: "upload",
+    // The body is multipart, so it is read here rather than through the JSON
+    // schema path; every byte of it is still bounded (see admitUpload).
+    rateLimit: RATE_LIMITS.upload,
+  },
+  async ({ req, userId, requestId }) => {
+    // Rejected before the body is buffered when the client declares a size
+    // over the limit. The declared value is not trusted on its own — the
+    // real length is checked again after reading.
+    const declared = Number(req.headers.get("content-length") ?? NaN);
+    if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES + 64 * 1024) {
+      throw new ApiError(413, "limit", "That file is larger than the upload limit.");
     }
 
-    const formData = await req.formData();
+    let formData: FormData;
+    try {
+      formData = await req.formData();
+    } catch {
+      throw new ApiError(400, "validation", "That upload could not be read.");
+    }
     const file = formData.get("file");
     if (!file || typeof file === "string") {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 });
+      throw new ApiError(400, "validation", "No file provided.");
     }
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const text = await parseDocument(file.name, buffer);
+    if (file.size > MAX_UPLOAD_BYTES) {
+      throw new ApiError(413, "limit", "That file is larger than the upload limit.");
+    }
 
-    if (!text || text.trim().length < MIN_EXTRACTED_CHARS) {
-      return NextResponse.json(
-        { error: "Could not extract readable text from this file." },
-        { status: 422 }
-      );
+    const buffer = Buffer.from(await file.arrayBuffer());
+
+    let admitted: { name: string; ext: string };
+    try {
+      // H5: size, real format, archive entry count, expanded size and
+      // compression ratio are all checked before any parser touches the file.
+      admitted = admitUpload(file.name, buffer);
+    } catch (err) {
+      if (err instanceof UploadRejected) {
+        throw new ApiError(err.status, err.status === 413 ? "limit" : "validation", err.message);
+      }
+      throw err;
+    }
+
+    const extracted = await parseDocument(admitted.name, buffer);
+    // Bounds everything downstream — chunking, embedding, database rows —
+    // by a value that does not depend on how well the file compressed.
+    const text = (extracted ?? "").slice(0, MAX_EXTRACTED_CHARS);
+
+    if (text.trim().length < MIN_EXTRACTED_CHARS) {
+      throw new ApiError(422, "validation", "Could not extract readable text from this file.");
     }
 
     const docId = randomUUID();
-    const { numChunks, preview, sample } = await ingestDocument(docId, userId, file.name, text);
+    const { numChunks, preview, sample } = await ingestDocument(
+      docId,
+      userId,
+      admitted.name,
+      text
+    );
 
     // The document itself is already indexed and usable at this point, so a
     // failed concept extraction must not fail the whole upload — but it does
@@ -52,32 +89,23 @@ export async function POST(req: NextRequest) {
     try {
       concepts = await extractConcepts(sample);
     } catch (err) {
-      const { body } = toErrorResponse(err);
-      conceptsWarning = `Document indexed, but key concepts couldn't be extracted. ${body.error}`;
+      // Only an LlmError carries a sentence written for a learner. Anything
+      // else keeps its detail in the log and reaches the UI as a generic line.
+      console.error(`[upload ${requestId}] concept extraction failed`, err);
+      const reason =
+        err instanceof LlmError ? err.userMessage : "Try uploading the document again.";
+      conceptsWarning = `Document indexed, but key concepts couldn't be extracted. ${reason}`;
     }
 
     const summary: DocumentSummary = {
       docId,
-      filename: file.name,
+      filename: admitted.name,
       numChunks,
       language: "auto",
       preview,
       concepts,
       conceptsWarning,
     };
-    return NextResponse.json(summary);
-  } catch (err) {
-    // An unsupported extension is the caller's mistake, not a server fault —
-    // returning 400 lets the UI say so plainly instead of "something failed".
-    // Logged as a one-line warning rather than console.error: a stack trace for
-    // an expected client error is noise that buries the failures that matter.
-    const message = err instanceof Error ? err.message : "";
-    if (/^Unsupported file type/.test(message)) {
-      console.warn(`[upload] rejected: ${message}`);
-      return NextResponse.json({ error: message, kind: "unsupported" }, { status: 400 });
-    }
-    console.error(err);
-    const { body, status } = toErrorResponse(err);
-    return NextResponse.json(body, { status });
+    return summary;
   }
-}
+);
