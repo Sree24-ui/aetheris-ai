@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import type { LessonSection, EvalResult, TranscriptMessage, VisualType } from "@/lib/types";
 import type { LearnerPlan } from "@/lib/lessonState";
 import { apiRequest, errorMessage } from "@/lib/http";
-import { useSpeech } from "@/hooks/useSpeech";
+import { languageToBCP47, useSpeech } from "@/hooks/useSpeech";
 import Avatar from "./Avatar";
 import SlideRenderer from "./SlideRenderer";
 import VideoRecorder from "./VideoRecorder";
@@ -158,6 +158,26 @@ export default function TeachingSession({
       chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }
   }, [chatMessages, panelTab]);
+
+  /**
+   * M12: generated lesson text is not in the document's language.
+   * `<html lang="en">` tells a screen reader to pronounce a Hindi narration
+   * with English phonetics, which is unintelligible. Every element carrying
+   * lesson text gets the language it is actually written in.
+   */
+  const contentLang = languageToBCP47(language);
+
+  /**
+   * Navigating away mid-lesson loses the section in progress. The lesson
+   * itself is durable now, but an unsaved position and an unanswered
+   * checkpoint are not worth losing silently.
+   */
+  useEffect(() => {
+    if (phase === "done") return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [phase]);
 
   // Esc (or the browser's own fullscreen UI) exits fullscreen without going
   // through our button, which would otherwise leave the icon showing the
@@ -526,7 +546,13 @@ export default function TeachingSession({
             {showCaptions && (
               <div className="w-full flex justify-center px-2 min-h-0">
                 <div className="glass-panel px-6 py-4 rounded-2xl max-w-2xl max-h-32 overflow-y-auto text-center">
-                  <p className="font-body-md text-on-surface text-sm leading-relaxed">
+                  {/* Captions follow the narration, so they are announced as
+                      they change rather than only on request. */}
+                  <p
+                    lang={contentLang}
+                    aria-live="polite"
+                    className="font-body-md text-on-surface text-sm leading-relaxed"
+                  >
                     {phase === "checkpoint" || phase === "evaluating"
                       ? section.checkpoint?.question
                       : section.narration}
@@ -632,7 +658,10 @@ export default function TeachingSession({
 
         {panelTab === "lesson" ? (
           <>
-            <div className="flex-1 p-4 overflow-y-auto flex flex-col gap-4 min-h-[240px] max-h-[45vh] xl:max-h-none">
+            <div
+              lang={contentLang}
+              className="flex-1 p-4 overflow-y-auto flex flex-col gap-4 min-h-[240px] max-h-[45vh] xl:max-h-none"
+            >
               {messages.map((m) => (
                 <div
                   key={m.id}

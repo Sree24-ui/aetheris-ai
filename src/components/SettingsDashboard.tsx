@@ -343,9 +343,19 @@ export default function SettingsDashboard({ onGoProfile }: { onGoProfile: () => 
                   </p>
                 </div>
               </div>
-              <button className="btn-sheen relative z-10 px-6 py-3 rounded-full bg-primary text-on-primary font-label-caps text-label-caps overflow-hidden">
-                SAMPLE BUTTON
-              </button>
+              {/* L2: this was a <button> labelled "SAMPLE BUTTON" that did
+                  nothing — a dead end for anyone tabbing through, and an
+                  unfinished-looking placeholder for everyone else. It is a
+                  swatch showing how a primary button looks under the current
+                  settings, so it is now a swatch: not focusable, and hidden
+                  from assistive technology, which the panel's own text
+                  already describes. */}
+              <span
+                aria-hidden="true"
+                className="btn-sheen relative z-10 px-6 py-3 rounded-full bg-primary text-on-primary font-label-caps text-label-caps overflow-hidden"
+              >
+                Primary button
+              </span>
             </div>
           </>
         )}

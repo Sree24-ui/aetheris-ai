@@ -270,11 +270,15 @@ export default function ConfigForm({
           </div>
 
           <div>
-            <label className="font-label-caps text-label-caps text-on-surface-variant flex items-center gap-2 mb-2">
-              <Icon name="edit_note" className="text-sm" /> Topic or instruction
+            <label
+              htmlFor="lesson-instruction"
+              className="font-label-caps text-label-caps text-on-surface-variant flex items-center gap-2 mb-2"
+            >
+              <Icon name="edit_note" className="text-sm" aria-hidden /> Topic or instruction
             </label>
             <div className="flex gap-2 mb-2">
               <input
+                id="lesson-instruction"
                 className="flex-1 rounded-xl border border-white/10 bg-surface-container/50 px-4 py-3 text-on-surface placeholder-outline-variant focus:outline-none focus:border-primary/40"
                 value={instruction}
                 onChange={(e) => setInstruction(e.target.value)}
@@ -288,7 +292,11 @@ export default function ConfigForm({
                 {parsing ? "Reading..." : "Parse"}
               </button>
             </div>
+            <label htmlFor="lesson-topic" className="sr-only">
+              Topic
+            </label>
             <input
+              id="lesson-topic"
               className="w-full rounded-xl border border-white/10 bg-surface-container/50 px-4 py-3 text-on-surface placeholder-outline-variant focus:outline-none focus:border-primary/40"
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
@@ -376,10 +384,14 @@ export default function ConfigForm({
             </div>
 
             <div className="flex flex-col gap-4">
-              <h3 className="font-label-caps text-label-caps text-on-surface-variant flex items-center gap-2">
-                <Icon name="language" className="text-sm" /> Language
-              </h3>
+              <label
+                htmlFor="lesson-language"
+                className="font-label-caps text-label-caps text-on-surface-variant flex items-center gap-2"
+              >
+                <Icon name="language" className="text-sm" aria-hidden /> Language
+              </label>
               <select
+                id="lesson-language"
                 value={language}
                 onChange={(e) => setLanguage(e.target.value)}
                 className="glass-bubble rounded-xl p-4 text-on-surface bg-transparent focus:outline-none"
@@ -398,7 +410,11 @@ export default function ConfigForm({
                   </span>
                 </p>
               )}
+              <label htmlFor="lesson-objective" className="sr-only">
+                Objective
+              </label>
               <input
+                id="lesson-objective"
                 className="rounded-xl border border-white/10 bg-surface-container/50 px-4 py-3 text-sm text-on-surface placeholder-outline-variant focus:outline-none focus:border-primary/40"
                 value={objective}
                 onChange={(e) => setObjective(e.target.value)}
@@ -407,8 +423,11 @@ export default function ConfigForm({
             </div>
           </div>
 
+          {/* M12: an asynchronous failure has to be announced, not just
+              rendered — a learner using a screen reader would otherwise get
+              no indication that the form did not submit. */}
           {error && (
-            <div className="text-sm text-error bg-error-container/20 border border-error/30 rounded-xl p-3.5">
+            <div role="alert" className="text-sm text-error bg-error-container/20 border border-error/30 rounded-xl p-3.5">
               {error}
             </div>
           )}

@@ -364,8 +364,37 @@ a[href]:active,
   -webkit-mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
 }
 
+/* M12: the system-level preference is a request from the person using the
+   machine, and it has to win over the app's own defaults — including the
+   confetti and the avatar, which were the two most obviously moving things
+   on screen and were exempt from this before. Kept as `!important` on
+   purpose: these override utility classes that are otherwise more specific. */
 @media (prefers-reduced-motion: reduce) {
-  .bubble-bg { animation: none; opacity: 0.15; }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .bubble-bg,
+  .ambient-blob,
+  .animate-float,
+  .animate-float-delayed {
+    animation: none !important;
+  }
+  .bubble-bg { opacity: 0.15; }
+}
+
+/* M12: a visible focus ring on every keyboard-reachable control. Several
+   controls set `focus:outline-none` for their own styling and replaced it
+   with a colour change that does not survive a high-contrast setting, which
+   left keyboard users with nothing to follow. */
+:focus-visible {
+  outline: 2px solid var(--color-primary, #d0bcff);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 /* --- Interface preferences (Settings → Atmosphere) ----------------------

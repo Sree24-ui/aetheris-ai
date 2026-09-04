@@ -1,0 +1,88 @@
+# Quality gates for every change (H12).
+#
+# The project had no CI at all, so a security fix or a state-machine change
+# could regress without anything noticing — deployment success proved the code
+# compiled, not that it behaved.
+#
+# The jobs are split so a failure names what broke rather than "CI failed",
+# and they run in parallel because none depends on another.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch supersedes the run in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # No secrets are needed: nothing here touches the database or a model
+  # provider. A build-time placeholder keeps Auth.js from failing to
+  # initialise during the production build.
+  AUTH_SECRET: ci-placeholder-secret-not-used-at-runtime
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+      - run: npm ci
+      # Includes the security regression suites: expression injection, open
+      # redirects, diagram injection, zip bombs, prompt injection, the
+      # authorization matrix and cross-tenant access.
+      - run: npm test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  # Advisory rather than blocking: a new advisory against a transitive
+  # dependency should raise a flag, not stop an unrelated fix from merging.
+  audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high

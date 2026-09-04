@@ -263,6 +263,16 @@ export const profilePatchSchema = z.object({
   name: z.string().trim().min(1).max(255),
 });
 
+// --- /api/account ---------------------------------------------------------
+
+/**
+ * Deleting an account is irreversible and takes everything with it, so the
+ * learner types their own address back rather than clicking one button.
+ */
+export const deleteAccountRequestSchema = z.object({
+  confirmEmail: z.string().trim().min(3).max(254),
+});
+
 // --- /api/auth/register ---------------------------------------------------
 
 export function registerRequestSchema(minPasswordLength: number) {

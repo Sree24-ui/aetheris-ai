@@ -6,6 +6,7 @@ import Icon from "./Icon";
 import UserAvatar from "./UserAvatar";
 import { loadMemory } from "@/lib/memory";
 import { apiRequest, errorMessage } from "@/lib/http";
+import { signOut } from "next-auth/react";
 import type { LearnerMemory } from "@/lib/types";
 
 interface Profile {
@@ -26,6 +27,55 @@ export default function ProfileDashboard({ onClose }: { onClose: () => void }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmEmail, setConfirmEmail] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+
+  /**
+   * M13: a learner had no way to take their data with them. The export is a
+   * plain JSON document — history with transcripts, uploaded text, graded
+   * assessments — fetched and saved from the browser.
+   */
+  async function exportData() {
+    setAccountError(null);
+    try {
+      const response = await fetch("/api/account/export");
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error ?? "Export failed.");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `aetheris-export-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      // Released immediately: the download has already been handed to the
+      // browser, and an unrevoked object URL pins the whole blob in memory.
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setAccountError(errorMessage(err));
+    }
+  }
+
+  /**
+   * M13: deletion is irreversible and takes history, documents, embeddings
+   * and assessments with it, so the learner types their own address back
+   * rather than clicking a single button.
+   */
+  async function deleteAccount() {
+    if (deleting) return;
+    setDeleting(true);
+    setAccountError(null);
+    try {
+      await apiRequest("/api/account", { method: "DELETE", body: { confirmEmail } });
+      await signOut({ callbackUrl: "/" });
+    } catch (err) {
+      setAccountError(errorMessage(err));
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -208,6 +258,59 @@ export default function ProfileDashboard({ onClose }: { onClose: () => void }) {
           </div>
         </div>
       )}
+
+      <section className="glass-panel rounded-xl p-5 space-y-4">
+        <h3 className="font-headline-md text-[18px] text-on-surface flex items-center gap-2">
+          <Icon name="manage_accounts" className="text-primary-fixed-dim" aria-hidden />
+          Your data
+        </h3>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={exportData}
+            className="px-4 py-2 rounded-full bg-white/5 hover:bg-white/10 text-secondary-fixed-dim text-sm border border-white/10"
+          >
+            Download everything
+          </button>
+          <p className="text-xs text-on-surface-variant">
+            Lesson history and transcripts, uploaded text, and graded assessments, as JSON.
+          </p>
+        </div>
+
+        <div className="border-t border-white/10 pt-4 space-y-2">
+          <h4 className="font-label-caps text-label-caps text-error">Delete account</h4>
+          <p className="text-xs text-on-surface-variant">
+            This removes your history, uploaded documents and assessments. It cannot be undone.
+            Type <strong>{profile?.email}</strong> to confirm.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <label htmlFor="confirm-delete-email" className="sr-only">
+              Confirm your email address to delete this account
+            </label>
+            <input
+              id="confirm-delete-email"
+              value={confirmEmail}
+              onChange={(e) => setConfirmEmail(e.target.value)}
+              placeholder="your email address"
+              autoComplete="off"
+              className="rounded-xl border border-white/10 bg-surface-container/50 px-4 py-2 text-sm text-on-surface placeholder-outline-variant"
+            />
+            <button
+              onClick={deleteAccount}
+              disabled={deleting || confirmEmail.trim().length === 0}
+              className="px-4 py-2 rounded-full border border-error/50 text-error text-sm hover:bg-error-container/20 disabled:opacity-40"
+            >
+              {deleting ? "Deleting..." : "Delete my account"}
+            </button>
+          </div>
+        </div>
+
+        {accountError && (
+          <p role="alert" className="text-sm text-error">
+            {accountError}
+          </p>
+        )}
+      </section>
     </div>
   );
 }

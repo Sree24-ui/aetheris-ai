@@ -72,10 +72,11 @@ function SignInForm() {
 
       <form onSubmit={handleSubmit} className="space-y-5">
         <div>
-          <label className="font-label-caps text-label-caps text-on-surface-variant block uppercase tracking-wider ml-4 mb-2">Email address</label>
+          <label htmlFor="signin-email" className="font-label-caps text-label-caps text-on-surface-variant block uppercase tracking-wider ml-4 mb-2">Email address</label>
           <div className="flex items-center gap-3 rounded-full border border-white/8 bg-surface-container-low/70 backdrop-blur-md px-5 py-4 transition-colors focus-within:border-primary/40">
             <Icon name="mail" className="text-[20px] text-primary" />
             <input
+              id="signin-email"
               type="email"
               required
               autoComplete="email"
@@ -88,10 +89,11 @@ function SignInForm() {
         </div>
 
         <div>
-          <label className="font-label-caps text-label-caps text-on-surface-variant block uppercase tracking-wider ml-4 mb-2">Password</label>
+          <label htmlFor="signin-password" className="font-label-caps text-label-caps text-on-surface-variant block uppercase tracking-wider ml-4 mb-2">Password</label>
           <div className="flex items-center gap-3 rounded-full border border-white/8 bg-surface-container-low/70 backdrop-blur-md px-5 py-4 transition-colors focus-within:border-primary/40">
             <Icon name="lock" className="text-[20px] text-primary" />
             <input
+              id="signin-password"
               type={showPassword ? "text" : "password"}
               required
               autoComplete="current-password"
@@ -103,15 +105,19 @@ function SignInForm() {
             <button
               type="button"
               onClick={() => setShowPassword((s) => !s)}
+              // M12: an icon-only control needs a name of its own, and one
+              // that says what it will do rather than what is on screen.
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-pressed={showPassword}
               className="text-xs text-on-surface-variant hover:text-on-surface flex items-center gap-1"
             >
-              <Icon name={showPassword ? "visibility_off" : "visibility"} className="text-[16px]" />
+              <Icon name={showPassword ? "visibility_off" : "visibility"} className="text-[16px]" aria-hidden />
             </button>
           </div>
         </div>
 
         {error && (
-          <div className="text-sm text-error bg-error-container/20 border border-error/30 rounded-lg p-3">
+          <div role="alert" className="text-sm text-error bg-error-container/20 border border-error/30 rounded-lg p-3">
             {error}
           </div>
         )}

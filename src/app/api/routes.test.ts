@@ -308,6 +308,20 @@ before(() => {
       parseDocument: async () => "A paragraph of extracted text that is long enough to keep.",
     },
   });
+  mock.module(lib("account.ts"), {
+    namedExports: {
+      exportAccount: async (userId: number) => ({
+        exportedAt: "2026-01-01T00:00:00.000Z",
+        account: { name: "Ada", email: `user${userId}@example.com`, createdAt: "" },
+        learningPath: null,
+        history: [],
+        documents: [],
+        assessments: [],
+      }),
+      deleteAccount: async (userId: number, confirmEmail: string) =>
+        confirmEmail.trim().toLowerCase() === `user${userId}@example.com`,
+    },
+  });
   mock.module(lib("db.ts"), {
     namedExports: { pool: { query: async () => ({ rows: [] }) } },
   });
@@ -385,6 +399,8 @@ const validPlan = {
 
 /** Every sensitive route, with a body that would otherwise be accepted. */
 const matrix: { route: string; method: "GET" | "POST" | "PATCH" | "DELETE"; body?: unknown }[] = [
+  { route: "account/export", method: "GET" },
+  { route: "account", method: "DELETE", body: { confirmEmail: "user1@example.com" } },
   { route: "documents", method: "GET" },
   { route: "documents/jobs", method: "GET" },
   {
@@ -1115,6 +1131,37 @@ test("a status request without a job id is a 400", async () => {
   const { GET } = await loadRoute("documents/jobs");
   const response = await GET(new Request("https://aetheris.invalid/api/documents/jobs"));
   assert.equal(response.status, 400);
+});
+
+// --- Account lifecycle (M13) ----------------------------------------------
+
+test("a learner can export everything their account holds", async () => {
+  session = { user: { id: "1" } };
+  const { GET } = await loadRoute("account/export");
+  const response = await GET(get());
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-disposition") ?? "", /attachment; filename=/);
+  const body = await response.json();
+  assert.equal(body.account.email, "user1@example.com");
+  assert.ok("history" in body && "documents" in body && "assessments" in body);
+});
+
+test("deleting an account requires its own address, exactly", async () => {
+  const { DELETE } = await loadRoute("account");
+  session = { user: { id: "1" } };
+
+  const wrong = await DELETE(del({ confirmEmail: "someone-else@example.com" }));
+  assert.equal(wrong.status, 400, "a mismatched address must not delete anything");
+
+  const right = await DELETE(del({ confirmEmail: "  User1@Example.com " }));
+  assert.equal(right.status, 200, "the learner's own address, case and space insensitive");
+});
+
+test("deletion refuses an empty confirmation", async () => {
+  const { DELETE } = await loadRoute("account");
+  session = { user: { id: "1" } };
+  assert.equal((await DELETE(del({ confirmEmail: "" }))).status, 400);
+  assert.equal((await DELETE(del({}))).status, 400);
 });
 
 test("an error response never carries internal detail", async () => {
