@@ -132,6 +132,13 @@ npm run dev
 # open http://localhost:3000
 ```
 
+Requires Node 22.6 or newer (the test runner executes the project's TypeScript
+directly through Node's type stripping). Run the checks with:
+
+```bash
+npm run check      # lint + typecheck + tests
+```
+
 `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` are optional — without them the app runs on email/password sign-in and hides the Google button.
 
 First document upload triggers a one-time download of the local embedding model (~90MB, cached afterward).
@@ -158,6 +165,39 @@ npm start
 
 Set `GROQ_API_KEY` (or `GEMINI_API_KEY` with `LLM_PROVIDER=gemini`), `DATABASE_URL` and `AUTH_SECRET` as environment variables on the host, and run `npm run migrate` once against that database. Uploaded documents and their chunk embeddings are stored in Postgres (`documents` / `document_chunks`), so uploads survive across serverless instances and deployments.
 
+## Security Model
+
+The trust boundary is that **everything the model produces, and everything an
+uploaded document contains, is untrusted input** — right through to the point
+where it is rendered.
+
+| Control | Where | What it stops |
+| --- | --- | --- |
+| Allow-listed maths expression parser | `src/lib/security/mathExpression.ts` | Graph expressions are parsed into a small AST and evaluated by walking it. There is no `eval`, no `new Function`, no property access and no way to name anything outside the supported function list. |
+| Diagram source check + SVG sanitiser | `src/lib/security/diagram.ts` | Mermaid runs in `securityLevel: "strict"` with HTML labels off; the definition is screened for markup, `click` directives and script-capable URLs, and the rendered SVG is sanitised against an allow-list before it reaches the DOM. |
+| Callback destination validator | `src/lib/security/callbackUrl.ts` | `?callbackUrl=` after sign-in accepts only approved internal paths. Absolute, protocol-relative, backslash, encoded and credential-bearing forms all fall back to `/app`. |
+| Content Security Policy | `src/lib/security/headers.ts`, applied in `src/proxy.ts` | Per-request nonce with `strict-dynamic`; no `unsafe-inline` and no `unsafe-eval` for scripts outside development. Framing, plugins and cross-origin form posts are refused. |
+| Runtime schemas | `src/lib/schemas/` | Every request body and every structured model response is validated and bounded at runtime, not just typed at compile time. Invalid model output gets one bounded repair round and is then rejected rather than persisted. |
+| Route guards | `src/lib/apiGuard.ts`, `src/lib/security/http.ts` | Each handler authenticates for itself, derives the user id from the session (never from the body), checks ownership for document ids, and enforces body-size, rate and daily model-cost limits. |
+| Upload admission control | `src/lib/security/uploads.ts` | Size cap, magic-number check against the claimed extension, and archive entry-count / expanded-size / compression-ratio limits read from the zip directory before anything is decompressed. |
+| Verified database TLS | `db/ssl.mjs` | Remote Postgres connections verify the server certificate. The insecure escape hatch is refused when `NODE_ENV=production`. |
+
+Two consequences worth knowing about:
+
+- **Every page is server-rendered per request** (`export const dynamic` in
+  `src/app/layout.tsx`). A nonce-based CSP cannot be applied to a page
+  prerendered at build time, so static optimisation was traded for a script
+  policy with no `unsafe-inline`.
+- **Rate limits are per instance.** The counters live in process memory, so a
+  deployment running N instances has an effective limit of up to N times the
+  configured value. That is a deliberate, documented simplification; moving to
+  a shared store means changing one function (`consume` in
+  `src/lib/security/rateLimit.ts`).
+
+Security controls are covered by regression tests — `npm test` runs the
+open-redirect, expression-injection, diagram-injection, zip-bomb,
+authorization-matrix and cross-tenant cases.
+
 ## Known Limitations
 
 - **Free-tier LLM latency/flakiness**: the default provider (`LLM_PROVIDER=groq`) runs on a free, shared pool and can be slow or occasionally time out under load, despite the app's retry/fallback/timeout handling. Switching to `gemini`, or pointing `GROQ_MODEL`/`GEMINI_MODEL` at a paid tier, removes this.
@@ -166,4 +206,5 @@ Set `GROQ_API_KEY` (or `GEMINI_API_KEY` with `LLM_PROVIDER=gemini`), `DATABASE_U
 - **No mid-lesson resume**: the in-progress lesson lives in browser state, so refreshing mid-lesson restarts that lesson. Completed history and progress are stored server-side against the account and are unaffected.
 - **PPTX/PDF parsing is text-only**: embedded images/diagrams in source material are not extracted or shown; only text content is used for grounding.
 - **Interface preferences are per-device**: accent, background density, motion and narration voice are stored in `localStorage` rather than on the account, so they don't follow a learner to another browser or machine.
-- **No automated tests**: the project has no test suite; changes are verified manually.
+- **Partial test coverage**: security-critical logic (validators, schemas, parsers, route authorization) has automated regression tests. Component, browser and load tests are not written yet, so UI behaviour is still verified manually.
+- **Ingestion is synchronous**: parsing, chunking and embedding all run inside the upload request. Limits keep it bounded, but a large document on a cold start can still approach the 60-second function ceiling.

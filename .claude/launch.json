@@ -6,6 +6,13 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 3000
+    },
+    {
+      "name": "aetheris-prod",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["next", "start"],
+      "autoPort": true,
+      "port": 3100
     }
   ]
 }
