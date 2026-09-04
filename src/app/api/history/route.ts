@@ -1,7 +1,12 @@
 import { defineRoute } from "@/lib/apiGuard";
 import { RATE_LIMITS } from "@/lib/security/rateLimit";
 import { historyEntryRequestSchema } from "@/lib/schemas/requests";
-import { loadMemoryForUser, addHistoryEntryForUser } from "@/lib/serverMemory";
+import { ApiError } from "@/lib/apiGuard";
+import {
+  HistoryIdConflict,
+  addHistoryEntryForUser,
+  loadMemoryForUser,
+} from "@/lib/serverMemory";
 
 export const runtime = "nodejs";
 
@@ -19,8 +24,15 @@ export const POST = defineRoute(
   },
   async ({ body, userId }) => {
     // The row is written against the session's user id; nothing in the body
-    // can name a different owner.
-    await addHistoryEntryForUser(userId, body);
-    return { ok: true, id: body.id };
+    // can name a different owner. Re-sending the same entry id is a replay,
+    // not a second lesson, so a retry after a timeout is safe.
+    try {
+      return await addHistoryEntryForUser(userId, body);
+    } catch (err) {
+      if (err instanceof HistoryIdConflict) {
+        throw new ApiError(409, "validation", err.message);
+      }
+      throw err;
+    }
   }
 );

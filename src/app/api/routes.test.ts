@@ -25,6 +25,17 @@ let session: { user?: { id?: string } } | null = null;
 /** Documents, by id, with their owning user — the stub store for ownership. */
 const documents = new Map<string, number>([["3f2504e0-4f89-11d3-9a0c-0305e82c3301", 1]]);
 
+/**
+ * In-memory stand-ins for the two commands whose contract the routes depend
+ * on. The SQL itself needs a database and is not covered here; what these
+ * prove is that the routes surface the contract correctly — a replay as a
+ * replay, a stolen id as 409, an out-of-order advance as a no-op.
+ */
+class StubHistoryIdConflict extends Error {}
+class StubNoActivePath extends Error {}
+const historyRows = new Map<string, number>();
+const paths = new Map<number, { steps: number; index: number }>();
+
 before(() => {
   mock.module(lib("auth.ts"), {
     namedExports: {
@@ -57,10 +68,34 @@ before(() => {
   });
   mock.module(lib("serverMemory.ts"), {
     namedExports: {
-      loadMemoryForUser: async () => ({ history: [], weakConcepts: [], strongConcepts: [] }),
-      addHistoryEntryForUser: async () => undefined,
-      setCurrentPathForUser: async () => undefined,
-      advancePathForUser: async () => undefined,
+      HistoryIdConflict: StubHistoryIdConflict,
+      NoActivePath: StubNoActivePath,
+      loadMemoryForUser: async () => ({
+        history: [],
+        weakConcepts: [],
+        strongConcepts: [],
+        historyTotal: 0,
+      }),
+      addHistoryEntryForUser: async (userId: number, entry: { id: string }) => {
+        const owner = historyRows.get(entry.id);
+        if (owner === undefined) {
+          historyRows.set(entry.id, userId);
+          return { id: entry.id, replayed: false };
+        }
+        if (owner !== userId) throw new StubHistoryIdConflict();
+        return { id: entry.id, replayed: true };
+      },
+      setCurrentPathForUser: async (userId: number, path: { steps: unknown[] }, index: number) => {
+        paths.set(userId, { steps: path.steps.length, index });
+      },
+      advancePathForUser: async (userId: number, fromStepIndex: number) => {
+        const path = paths.get(userId);
+        if (!path) throw new StubNoActivePath();
+        if (path.index !== fromStepIndex) return { stepIndex: path.index, advanced: false };
+        path.index = Math.min(fromStepIndex + 1, Math.max(path.steps - 1, 0));
+        return { stepIndex: path.index, advanced: true };
+      },
+      deriveConceptMastery: () => ({ strongConcepts: [], weakConcepts: [] }),
     },
   });
   mock.module(lib("db.ts"), {
@@ -70,6 +105,8 @@ before(() => {
 
 beforeEach(async () => {
   session = null;
+  historyRows.clear();
+  paths.clear();
   const { resetRateLimits } = await import(lib("security/rateLimit.ts"));
   resetRateLimits();
 });
@@ -150,7 +187,7 @@ const matrix: { route: string; method: "GET" | "POST" | "PATCH"; body?: unknown 
     method: "POST",
     body: { path: { topic: "Algebra", steps: [{ id: "a", title: "One" }] }, stepIndex: 0 },
   },
-  { route: "history/path/advance", method: "POST" },
+  { route: "history/path/advance", method: "POST", body: { fromStepIndex: 0 } },
   { route: "profile", method: "GET" },
   { route: "profile", method: "PATCH", body: { name: "Ada" } },
   { route: "upload", method: "POST" },
@@ -239,6 +276,109 @@ test("registration is reachable without a session", async () => {
     post({ name: "Ada", email: "ada@example.com", password: "correct-horse-battery" })
   );
   assert.notEqual(response.status, 401);
+});
+
+// --- Idempotency and version checks (H7/H8) -------------------------------
+
+test("re-sending the same history entry is a replay, not a second lesson", async () => {
+  const { POST } = await loadRoute("history");
+  session = { user: { id: "1" } };
+  const entry = {
+    id: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+    topic: "Algebra",
+    date: new Date().toISOString(),
+  };
+
+  const first = await POST(post(entry));
+  assert.equal(first.status, 200);
+  assert.deepEqual(await first.json(), { id: entry.id, replayed: false });
+
+  const retry = await POST(post(entry));
+  assert.equal(retry.status, 200);
+  assert.deepEqual(await retry.json(), { id: entry.id, replayed: true });
+});
+
+test("a history id already used by another learner is refused", async () => {
+  const { POST } = await loadRoute("history");
+  const entry = {
+    id: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+    topic: "Algebra",
+    date: new Date().toISOString(),
+  };
+  session = { user: { id: "1" } };
+  await POST(post(entry));
+  session = { user: { id: "2" } };
+  const stolen = await POST(post(entry));
+  assert.equal(stolen.status, 409);
+});
+
+test("advancing requires the step the finished lesson belonged to", async () => {
+  const { POST } = await loadRoute("history/path/advance");
+  session = { user: { id: "1" } };
+  const missing = await POST(post({}));
+  assert.equal(missing.status, 400, "fromStepIndex is required");
+});
+
+test("a duplicate completion advances the path exactly once", async () => {
+  const setPath = (await loadRoute("history/path")).POST;
+  const advance = (await loadRoute("history/path/advance")).POST;
+  session = { user: { id: "1" } };
+  await setPath(
+    post({
+      path: {
+        topic: "Algebra",
+        steps: [
+          { id: "a", title: "One" },
+          { id: "b", title: "Two" },
+          { id: "c", title: "Three" },
+        ],
+      },
+      stepIndex: 0,
+    })
+  );
+
+  const first = await advance(post({ fromStepIndex: 0 }));
+  assert.deepEqual(await first.json(), { stepIndex: 1, advanced: true });
+
+  // The same completion arriving twice must not skip step 1.
+  const duplicate = await advance(post({ fromStepIndex: 0 }));
+  assert.deepEqual(await duplicate.json(), { stepIndex: 1, advanced: false });
+});
+
+test("the path index never runs past the last step", async () => {
+  const setPath = (await loadRoute("history/path")).POST;
+  const advance = (await loadRoute("history/path/advance")).POST;
+  session = { user: { id: "1" } };
+  await setPath(
+    post({
+      path: { topic: "Algebra", steps: [{ id: "a", title: "One" }, { id: "b", title: "Two" }] },
+      stepIndex: 1,
+    })
+  );
+  const atEnd = await advance(post({ fromStepIndex: 1 }));
+  // Two steps means 1 is the last valid index — not 2, which is what the old
+  // jsonb_array_length clamp allowed.
+  assert.deepEqual(await atEnd.json(), { stepIndex: 1, advanced: true });
+});
+
+test("advancing with no saved path is a 404, not a silent success", async () => {
+  const { POST } = await loadRoute("history/path/advance");
+  session = { user: { id: "1" } };
+  const response = await POST(post({ fromStepIndex: 0 }));
+  assert.equal(response.status, 404);
+});
+
+test("setting a path clamps the index to a real step", async () => {
+  const { POST } = await loadRoute("history/path");
+  session = { user: { id: "1" } };
+  const response = await POST(
+    post({
+      path: { topic: "Algebra", steps: [{ id: "a", title: "One" }] },
+      stepIndex: 5,
+    })
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, stepIndex: 0 });
 });
 
 test("an error response never carries internal detail", async () => {

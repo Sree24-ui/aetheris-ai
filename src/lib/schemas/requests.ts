@@ -166,6 +166,15 @@ export const setPathRequestSchema = z.object({
   stepIndex: z.number().int().min(0).max(19).default(0),
 });
 
+/**
+ * The step the finished lesson belonged to. The server only advances while
+ * its own index still matches, so this doubles as the version check that
+ * makes a duplicate completion a no-op.
+ */
+export const advancePathRequestSchema = z.object({
+  fromStepIndex: z.number().int().min(0).max(19),
+});
+
 // --- /api/profile ---------------------------------------------------------
 
 export const profilePatchSchema = z.object({

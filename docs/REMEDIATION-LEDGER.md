@@ -4,17 +4,17 @@ Tracks every finding in `Aetheris_AI_Project_Audit_Report.md` against the code
 as it stands. A finding is only marked **Fixed** when its acceptance test
 passes; "the code looks right" is not a status.
 
-**Session scope: Phase 0 (security containment) plus the findings that fell out
-of it.** Phase 1–4 findings are listed with their current status, the exact
-next step, and why they were not started — Phase 0 is a launch blocker and the
-report is explicit that broad work should not begin while it is open.
+**Progress: Phase 0 complete; Phase 1 in progress.** Phase 0 (security
+containment) is closed. Phase 1 (reliable learning workflow) has started with
+the persistence and progress findings — H7, H8, M1 and M2. Everything still
+open carries its current status and the exact next step.
 
 ## Verification commands
 
 ```bash
 npm run lint       # eslint            -> clean
 npx tsc --noEmit   # TypeScript strict -> clean
-npm test           # 239 tests         -> 239 pass, 0 fail
+npm test           # 266 tests         -> 266 pass, 0 fail
 npm run build      # production build  -> compiled, 20 routes
 npm run check      # all three of the above in sequence
 ```
@@ -27,18 +27,18 @@ none are being hidden.
 
 | Status | Count | IDs |
 | --- | --- | --- |
-| Fixed, with regression tests | 10 | C1, C2, H1, H2, H4, H5, H6, M7, M8, M9 |
-| Partially fixed | 4 | H3, H12, M12, M16 |
-| Confirmed, deferred to Phase 1 | 8 | H7, H8, H9, H10, M1, M2, M10, M11 |
-| Confirmed, deferred to Phase 2 | 5 | H11, M3, M4, M5, M6 |
-| Confirmed, deferred to Phase 3/4 | 3 | M13, M15, L2 |
+| Fixed, with regression tests | 13 | C1, C2, H1, H2, H4, H5, H6, H7, M1, M2, M7, M8, M9 |
+| Partially fixed | 5 | H3, H8, H12, M12, M16 |
+| Confirmed, still open — Phase 1 | 4 | H9, H10, M10, M11 |
+| Confirmed, still open — Phase 2 | 5 | H11, M3, M4, M5, M6 |
+| Confirmed, still open — Phase 3/4 | 3 | M13, M15, L2 |
 | Already accurate / closed | 2 | M14, L1 |
 
 All 32 findings (C1–C2, H1–H12, M1–M16, L1–L2) are accounted for above.
 
-No confirmed **critical or high security** finding remains open. H7–H11 are
-reliability and data-integrity findings, which the report itself places in
-Phases 1 and 2.
+No confirmed **critical or high security** finding remains open. The highs
+still outstanding — H9, H10, H11 — are reliability and data-integrity
+findings, which the report itself places in Phases 1 and 2.
 
 ---
 
@@ -251,28 +251,62 @@ Phases 1 and 2.
 
 ### H7 — History and path mutations can fail silently
 
-- **Status:** Confirmed, open. Phase 1.
-- **Evidence:** `src/lib/memory.ts:26-44` — `addHistoryEntry`, `setCurrentPath`
-  and `advancePath` all `await fetch(...)` and never check `response.ok`.
-  Unchanged by this session.
-- **Next step:** a typed client that checks status, parses the error body,
-  carries the request id the server already returns, and surfaces a
-  recoverable UI state; plus idempotency keys so a retry cannot duplicate a
-  history row.
+- **Status:** Fixed
+- **Confirmed at:** `src/lib/memory.ts:26-44` — `addHistoryEntry`,
+  `setCurrentPath` and `advancePath` each did `await fetch(...)` and discarded
+  the result, so a 401 from an expired session, a 429, a 500 and a dropped
+  connection were all indistinguishable from a successful save. `loadMemory`
+  was worse: it caught every failure and returned an empty memory, so a signed
+  -out learner saw "no lessons completed yet" rather than "sign in again".
+- **Implementation:**
+  - New `src/lib/http.ts` — `apiRequest` returns a parsed body or throws
+    `RequestFailed`, which carries a sentence fit to show, whether a retry is
+    worth offering, the `Retry-After` hint, and the server's request id. An
+    `AbortError` is re-thrown untouched so a cancelled request is not reported
+    as a failure.
+  - `src/lib/memory.ts` rewritten on top of it; every function now throws.
+  - Callers handle it: `HomeDashboard` shows a notice that its figures may be
+    stale, `LearnerDashboard` shows the failure with a retry button instead of
+    an empty history, `ProfileDashboard` no longer sits on its loading state
+    forever, and `src/app/app/page.tsx` reports session expiry specifically.
+  - Idempotency: the history entry id is minted once per completed lesson and
+    reused across retries (`pendingHistoryId`), and the server treats a second
+    write of the same id as a replay (`ON CONFLICT (id) DO NOTHING`) rather
+    than a duplicate-key 500. A second learner sending someone else's id gets
+    a 409.
+- **Tests:** `src/lib/http.test.ts` — 14 cases: every failing status becomes a
+  described throw, network failure, non-JSON error body, `Retry-After`
+  parsing, retryable classification, abort passthrough, empty 200 body,
+  session-expiry detection. `src/app/api/routes.test.ts` adds the replay and
+  409 cases.
+- **Residual risk:** The `ON CONFLICT` SQL itself is not covered — that needs
+  a database. The route tests prove the contract the routes depend on.
 
 ### H8 — Learning path state is incomplete and can advance incorrectly
 
-- **Status:** Confirmed, partially bounded. Phase 1.
-- **Done now:** `POST /api/history/path` validates the path and clamps
-  `stepIndex` to a real step of the submitted path (schema range plus an
-  explicit `Math.min`).
-- **Still open:** `advancePathForUser` in `src/lib/serverMemory.ts:120-129`
-  still clamps with `jsonb_array_length(path->'steps')`, one past the last
-  valid index; report completion advances whatever path is active regardless
-  of which lesson finished; the dashboard does not rehydrate path state.
-- **Next step:** `LEAST(current_step_index + 1, jsonb_array_length(...) - 1)`,
-  a path/step id carried through lesson start and completion, and one
-  transactional completion command.
+- **Status:** Partially fixed — three of the four sub-problems are closed
+- **Fixed: the off-by-one.** `advancePathForUser` clamped with
+  `jsonb_array_length(path->'steps')`, one *past* the last valid index, so
+  finishing the final step left the path pointing at a step that does not
+  exist. Now `GREATEST(jsonb_array_length(...) - 1, 0)`.
+- **Fixed: unconditional advancement.** The command now carries
+  `fromStepIndex` — the step the finished lesson belonged to — and the
+  `UPDATE` only matches while the stored index still equals it. A duplicate,
+  delayed or out-of-order completion is a no-op that reports the current
+  position (`advanced: false`) instead of skipping a step.
+- **Fixed: lesson/path association.** `src/app/app/page.tsx` tracks
+  `activePathStep`, set only when a lesson is started from a path step.
+  Completing a standalone lesson no longer advances a path the learner was
+  not working through.
+- **Fixed: index clamping on write.** `POST /api/history/path` clamps
+  `stepIndex` to a real step of the submitted path.
+- **Tests:** `src/app/api/routes.test.ts` — duplicate completion advances
+  exactly once, the index never runs past the last step, advancing with no
+  saved path is a 404, and a too-large `stepIndex` is clamped.
+- **Still open:** the dashboard does not rehydrate the saved path and make
+  resuming it a first-class action, and completion is still several requests
+  rather than one transactional command. Both land with the durable
+  `lesson_sessions` aggregate.
 
 ### H9 — Speech cancellation and pause races
 
@@ -315,8 +349,8 @@ Phases 1 and 2.
 
 | ID | Finding | Status | Notes |
 | --- | --- | --- | --- |
-| M1 | Older strong evidence overwrites newer weak evidence | Open (Phase 1) | `src/lib/serverMemory.ts:56-64` unchanged. The loop walks newest-first but `weak.delete(s)` lets an older strong result erase a newer weakness. |
-| M2 | 50-row window presented as lifetime history | Open (Phase 1) | `HISTORY_PAGE_SIZE` now range-checked, but the dashboard still labels windowed aggregates as lifetime. |
+| M1 | Older strong evidence overwrites newer weak evidence | **Fixed** | Extracted as `deriveConceptMastery`, a pure function with 7 tests. The rule is now what the comment always claimed: the most recent lesson mentioning a concept decides it, and older entries cannot change it. A concept listed both ways in one lesson resolves to weak — revisiting a known concept is cheaper than dropping one the learner has not grasped. |
+| M2 | 50-row window presented as lifetime history | **Fixed** | `loadMemoryForUser` returns `historyTotal` and `historyWindow` alongside the window, and `LearnerDashboard` says "showing the N most recent of M lessons" when the list is truncated. |
 | M3 | Chunk overlap misses ordinary paragraph boundaries | Open (Phase 2) | Config now guarantees `CHUNK_OVERLAP < CHUNK_MAX_CHARS` (an equal or larger overlap made the chunk loop stop advancing). The boundary behaviour in `src/lib/chunk.ts` is unchanged. |
 | M4 | Node-side JSONB vector scan | Open (Phase 2) | Needs pgvector; requires a decision about the database extension (see "Awaiting your approval"). |
 | M5 | No threshold, hybrid search, reranker or citations | Open (Phase 2) | |
@@ -358,14 +392,18 @@ Phases 1 and 2.
 
 ## Next implementation step
 
-Phase 1, in this order:
+Phase 1 continues, in this order:
 
-1. H7 — typed HTTP client in `src/lib/memory.ts` with status checks,
-   idempotency keys and recoverable UI errors.
-2. H8/M1 — fix the `advancePathForUser` off-by-one, associate completion with
-   a specific path step, and correct the mastery ordering in
-   `loadMemoryForUser`.
-3. H10 — move answer keys and grading to the server with stable question ids.
-4. H9 — rewrite `useSpeech` as an explicit state machine with per-utterance
-   ids and exactly-once settlement.
-5. Durable `lesson_sessions` so a refresh resumes rather than restarts.
+1. **H10** — move answer keys and grading to the server. Stable question ids,
+   deterministic MCQ grading server-side, rubric-bounded model grading only
+   for short answers, and grading evidence persisted with a grader version.
+   `correctAnswer` stops being sent to the browser.
+2. **H9** — rewrite `useSpeech` as an explicit state machine: per-utterance
+   ids, exactly-once settlement, `AbortSignal` cancellation, watchdogs
+   suspended during pause, preview isolated from lesson narration, and a
+   manual "continue" fallback when the browser cannot narrate.
+3. **M10/M11** — document deletion and retention; VideoRecorder track
+   cleanup, object-URL revocation and duration/size caps.
+4. **Durable `lesson_sessions`** — the server-owned aggregate that closes the
+   rest of H8 (dashboard rehydration, one transactional completion) and gives
+   refresh-and-resume.

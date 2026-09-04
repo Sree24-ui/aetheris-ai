@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { loadMemory } from "@/lib/memory";
+import { errorMessage } from "@/lib/http";
 import type { LearnerMemory } from "@/lib/types";
 import Icon from "./Icon";
 
@@ -11,18 +12,38 @@ export default function LearnerDashboard({ onClose }: { onClose: () => void }) {
   const [memory, setMemory] = useState<LearnerMemory>(EMPTY_MEMORY);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // The retry button, not the effect, resets the loading/error state — React
+  // forbids a synchronous setState in an effect body.
+  const retry = () => {
+    setLoading(true);
+    setError(null);
+    setReloadKey((n) => n + 1);
+  };
 
   useEffect(() => {
-    let cancelled = false;
-    loadMemory().then((m) => {
-      if (cancelled) return;
-      setMemory(m);
-      setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    const controller = new AbortController();
+    loadMemory(controller.signal)
+      .then((m) => {
+        setMemory(m);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        // H7: a failed load used to leave the spinner's empty state on screen,
+        // which reads as "you have never completed a lesson".
+        setError(errorMessage(err));
+        setLoading(false);
+      });
+    return () => controller.abort();
+  }, [reloadKey]);
+
+  // M2: `history` is the most recent window, not the whole account. Saying so
+  // keeps a windowed list from being read as a lifetime record.
+  const total = memory.historyTotal ?? memory.history.length;
+  const truncated = total > memory.history.length;
 
   return (
     <div className="w-full max-w-3xl mx-auto space-y-6 py-4">
@@ -72,6 +93,13 @@ export default function LearnerDashboard({ onClose }: { onClose: () => void }) {
         <h3 className="font-headline-md text-[18px] text-on-surface mb-3 flex items-center gap-2">
           <Icon name="history" className="text-primary-fixed-dim" />
           History
+          {total > 0 && (
+            <span className="font-body-md text-sm text-on-surface-variant font-normal">
+              {truncated
+                ? `showing the ${memory.history.length} most recent of ${total} lessons`
+                : `${total} ${total === 1 ? "lesson" : "lessons"}`}
+            </span>
+          )}
         </h3>
         <div className="space-y-2">
           {loading && (
@@ -80,7 +108,18 @@ export default function LearnerDashboard({ onClose }: { onClose: () => void }) {
               Loading your history...
             </div>
           )}
-          {!loading && memory.history.length === 0 && (
+          {error && (
+            <div className="text-sm text-error bg-error-container/20 border border-error/30 rounded-xl p-4 flex items-center justify-between gap-3 flex-wrap">
+              <span>Could not load your history: {error}</span>
+              <button
+                onClick={retry}
+                className="px-3 py-1.5 rounded-full bg-error-container/40 border border-error/40 text-xs font-medium whitespace-nowrap"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {!loading && !error && memory.history.length === 0 && (
             <div className="text-sm text-on-surface-variant">No lessons completed yet.</div>
           )}
           {memory.history.map((h, i) => {

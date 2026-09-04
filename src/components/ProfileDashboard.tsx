@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import Icon from "./Icon";
 import UserAvatar from "./UserAvatar";
 import { loadMemory } from "@/lib/memory";
+import { apiRequest, errorMessage } from "@/lib/http";
 import type { LearnerMemory } from "@/lib/types";
 
 interface Profile {
@@ -27,22 +28,26 @@ export default function ProfileDashboard({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    // H7: both loads report their own failure now. Previously a non-ok
+    // /api/profile became `null` and a failed history load rejected into
+    // nothing, leaving the page on its loading state forever.
     Promise.all([
-      fetch("/api/profile").then((r) => (r.ok ? r.json() : null)),
-      loadMemory(),
-    ]).then(([p, m]) => {
-      if (cancelled) return;
-      if (p) {
+      apiRequest<Profile>("/api/profile", { signal: controller.signal }),
+      loadMemory(controller.signal),
+    ])
+      .then(([p, m]) => {
         setProfile(p);
         setNameDraft(p.name ?? "");
-      }
-      setMemory(m);
-      setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
+        setMemory(m);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setError(errorMessage(err));
+        setLoading(false);
+      });
+    return () => controller.abort();
   }, []);
 
   async function saveName() {

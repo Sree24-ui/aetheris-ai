@@ -20,7 +20,8 @@ import LearningPathPanel from "@/components/LearningPathPanel";
 import LearnerDashboard from "@/components/LearnerDashboard";
 import ProfileDashboard from "@/components/ProfileDashboard";
 import SettingsDashboard from "@/components/SettingsDashboard";
-import { addHistoryEntry, setCurrentPath, advancePath, loadMemory } from "@/lib/memory";
+import { addHistoryEntry, setCurrentPath, advancePath } from "@/lib/memory";
+import { errorMessage, isSessionExpired } from "@/lib/http";
 
 type Stage = "home" | "config" | "planning" | "teaching" | "quiz" | "report" | "path" | "dashboard" | "profile" | "settings";
 
@@ -41,6 +42,19 @@ export default function Home() {
   const [pendingQuizResults, setPendingQuizResults] = useState<
     { question: QuizQuestion; studentAnswer: string; correct: boolean }[] | null
   >(null);
+  /**
+   * H8: which learning-path step the lesson in progress belongs to, or null
+   * when it is a standalone lesson. Completion used to advance whatever path
+   * happened to be active, so finishing an unrelated lesson skipped a step of
+   * a curriculum the learner was not even working through.
+   */
+  const [activePathStep, setActivePathStep] = useState<number | null>(null);
+  /**
+   * H7: the id for the history row of the lesson being finished, minted once
+   * and reused if the save has to be retried. A fresh UUID per attempt would
+   * write a second copy of the same lesson.
+   */
+  const [pendingHistoryId, setPendingHistoryId] = useState<string | null>(null);
 
   function goToConfig(params: { topic: string; doc?: DocumentSummary }) {
     setPendingTopic(params.topic);
@@ -49,8 +63,13 @@ export default function Home() {
     setStage("config");
   }
 
-  async function startLesson(params: { topic: string; profile: LearnerProfile; docId?: string }) {
+  async function startLesson(
+    params: { topic: string; profile: LearnerProfile; docId?: string },
+    fromPathStep: number | null = null
+  ) {
     setProfile(params.profile);
+    setActivePathStep(fromPathStep);
+    setPendingHistoryId(null);
     // Remembered so returning to the form after a failure restores exactly
     // what was submitted rather than resetting to defaults.
     setPendingTopic(params.topic);
@@ -68,7 +87,7 @@ export default function Home() {
       setCheckpointResults([]);
       setStage("teaching");
     } catch (err) {
-      setError((err as Error).message);
+      setError(describe(err));
       setStage("config");
     }
   }
@@ -91,7 +110,7 @@ export default function Home() {
       await setCurrentPath(data, 0);
       setStage("path");
     } catch (err) {
-      setError((err as Error).message);
+      setError(describe(err));
       setStage("config");
     }
   }
@@ -113,6 +132,9 @@ export default function Home() {
     if (!lessonPlan) return;
     setError(null);
     setPendingQuizResults(results);
+    // Reused across retries so a repeated save is a replay, not a duplicate.
+    const historyId = pendingHistoryId ?? crypto.randomUUID();
+    setPendingHistoryId(historyId);
     try {
       const res = await fetch("/api/lesson/report", {
         method: "POST",
@@ -130,7 +152,7 @@ export default function Home() {
       setReport(reportData);
       setPendingQuizResults(null);
       await addHistoryEntry({
-        id: crypto.randomUUID(),
+        id: historyId,
         topic: lessonPlan.topic,
         date: new Date().toISOString(),
         language: lessonPlan.language,
@@ -146,12 +168,29 @@ export default function Home() {
           correct: r.correct,
         })),
       });
-      const mem = await loadMemory();
-      if (mem.currentPath) await advancePath();
+      // Only a lesson that came from a path step moves the path, and only
+      // from the step it belonged to — the server refuses anything else.
+      if (activePathStep !== null) {
+        const position = await advancePath(activePathStep);
+        setCurrentStepIndex(position.stepIndex);
+        setActivePathStep(null);
+      }
+      setPendingHistoryId(null);
       setStage("report");
     } catch (err) {
-      setError((err as Error).message);
+      // The report itself may have succeeded; the retry button re-runs this
+      // whole function, and both the history write and the path advance are
+      // idempotent, so replaying it cannot duplicate or over-advance anything.
+      setError(describe(err));
     }
+  }
+
+  /** Turns any thrown value into a sentence, with a nudge when it is fixable. */
+  function describe(err: unknown): string {
+    if (isSessionExpired(err)) {
+      return "Your session has expired. Open the sign-in page in another tab, sign in, then retry.";
+    }
+    return errorMessage(err);
   }
 
   function reset() {
@@ -163,13 +202,22 @@ export default function Home() {
     setError(null);
     setPendingTopic(undefined);
     setPendingDoc(null);
+    setActivePathStep(null);
+    setPendingHistoryId(null);
+    setPendingQuizResults(null);
   }
 
   async function handleSelectPathStep(stepTitle: string, index: number) {
     if (!profile || !learningPath) return;
-    setCurrentStepIndex(index);
-    await setCurrentPath(learningPath, index);
-    startLesson({ topic: `${learningPath.topic} — ${stepTitle}`, profile });
+    try {
+      const position = await setCurrentPath(learningPath, index);
+      setCurrentStepIndex(position.stepIndex);
+      // The lesson is started with the step it belongs to, so completing it
+      // advances that step and nothing else.
+      startLesson({ topic: `${learningPath.topic} — ${stepTitle}`, profile }, position.stepIndex);
+    } catch (err) {
+      setError(describe(err));
+    }
   }
 
   const activeNav =

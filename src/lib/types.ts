@@ -163,9 +163,18 @@ export interface LearnerHistoryEntry {
 }
 
 export interface LearnerMemory {
+  /** The most recent lessons, newest first — at most `historyWindow` of them. */
   history: LearnerHistoryEntry[];
   weakConcepts: string[];
   strongConcepts: string[];
+  /**
+   * Lessons this learner has completed in total. `history` is a window, so
+   * anything presented as a lifetime figure has to come from here — see M2 in
+   * docs/REMEDIATION-LEDGER.md.
+   */
+  historyTotal?: number;
+  /** How many entries `history` can hold. */
+  historyWindow?: number;
   currentPath?: LearningPath;
   currentStepIndex?: number;
 }

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Icon from "./Icon";
 import { loadMemory } from "@/lib/memory";
+import { errorMessage } from "@/lib/http";
 import { DOCUMENT_ACCEPT_ATTRIBUTE } from "@/lib/appConfig";
 import type { DocumentSummary, LearnerMemory } from "@/lib/types";
 
@@ -28,14 +29,19 @@ export default function HomeDashboard({ onProceed, onRevise }: Props) {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [memory, setMemory] = useState<LearnerMemory>(EMPTY_MEMORY);
 
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+
   useEffect(() => {
-    let cancelled = false;
-    loadMemory().then((m) => {
-      if (!cancelled) setMemory(m);
-    });
-    return () => {
-      cancelled = true;
-    };
+    const controller = new AbortController();
+    // H7: this used to swallow every failure, so an expired session looked
+    // exactly like a learner with no history at all.
+    loadMemory(controller.signal)
+      .then(setMemory)
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setMemoryError(errorMessage(err));
+      });
+    return () => controller.abort();
   }, []);
 
   async function handleUploadClick() {
@@ -119,6 +125,14 @@ export default function HomeDashboard({ onProceed, onRevise }: Props) {
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div className="lg:col-span-8 space-y-8">
+          {memoryError && (
+            <p
+              role="status"
+              className="text-sm text-error bg-error-container/20 border border-error/30 rounded-xl p-4"
+            >
+              Your progress could not be loaded: {memoryError} Anything below may be out of date.
+            </p>
+          )}
           {memory.history.length > 0 && (
             <section>
               <div className="flex justify-between items-end mb-6">
