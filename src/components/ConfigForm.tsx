@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Icon from "./Icon";
 import type { LearnerProfile, DocumentSummary } from "@/lib/types";
+import { apiRequest, errorMessage } from "@/lib/http";
 import { LANGUAGES } from "@/lib/languages";
 import { hasVoiceFor, useVoices } from "@/hooks/useSpeech";
 import { DOCUMENT_ACCEPT_ATTRIBUTE } from "@/lib/appConfig";
@@ -49,6 +50,28 @@ export default function ConfigForm({
   const [parsing, setParsing] = useState(false);
   const [topic, setTopic] = useState(initialTopic ?? "");
   const [doc, setDoc] = useState<DocumentSummary | null>(initialDoc ?? null);
+  const [deleting, setDeleting] = useState(false);
+
+  /**
+   * M10: "Remove" used to clear the local selection only, leaving the text,
+   * its chunks and its embeddings in the database with no way for the learner
+   * to get rid of material they had uploaded. It now deletes them.
+   */
+  async function handleRemoveDocument() {
+    if (!doc || deleting) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await apiRequest("/api/documents", { method: "DELETE", body: { docId: doc.docId } });
+      setDoc(null);
+    } catch (err) {
+      // The document stays selected on failure: saying "removed" when the
+      // upload is still stored is the silent-failure pattern this replaced.
+      setError(`Could not delete that document. ${errorMessage(err)}`);
+    } finally {
+      setDeleting(false);
+    }
+  }
   const [uploading, setUploading] = useState(false);
   const [level, setLevel] = useState<LearnerProfile["level"]>(initialProfile?.level ?? "beginner");
   const [minutes, setMinutes] = useState(initialProfile?.availableMinutes ?? 20);
@@ -201,13 +224,11 @@ export default function ConfigForm({
                     {uploading ? "Processing..." : "Replace document"}
                   </button>
                   <button
-                    onClick={() => {
-                      setDoc(null);
-                      setError(null);
-                    }}
-                    className="text-xs text-on-surface-variant hover:text-error underline"
+                    onClick={handleRemoveDocument}
+                    disabled={deleting}
+                    className="text-xs text-on-surface-variant hover:text-error underline disabled:opacity-50"
                   >
-                    Remove
+                    {deleting ? "Deleting..." : "Delete document"}
                   </button>
                 </div>
               </>

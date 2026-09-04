@@ -10,7 +10,8 @@
     "migrate": "node --env-file=.env.local db/migrate.mjs",
     "test": "node --experimental-test-module-mocks --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tests/register.mjs --test \"src/**/*.test.ts\" \"db/**/*.test.mjs\"",
     "test:watch": "node --experimental-test-module-mocks --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tests/register.mjs --test --watch \"src/**/*.test.ts\" \"db/**/*.test.mjs\"",
-    "check": "npm run lint && tsc --noEmit && npm test"
+    "check": "npm run lint && tsc --noEmit && npm test",
+    "retention": "node --env-file=.env.local db/retention.mjs"
   },
   "dependencies": {
     "@auth/pg-adapter": "^1.11.3",

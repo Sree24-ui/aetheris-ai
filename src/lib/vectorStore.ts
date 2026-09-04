@@ -123,6 +123,57 @@ export async function getFullDocumentText(docId: string, userId: number): Promis
   return rows.map((r) => r.text).join("\n\n");
 }
 
+export interface DocumentRecord {
+  docId: string;
+  filename: string;
+  numChunks: number;
+  uploadedAt: string;
+}
+
+/** Every document this learner has uploaded, newest first. */
+export async function listDocumentsForUser(userId: number): Promise<DocumentRecord[]> {
+  const { rows } = await pool.query<{
+    id: string;
+    filename: string;
+    num_chunks: number;
+    created_at: string;
+  }>(
+    `SELECT id, filename, num_chunks, created_at
+       FROM documents
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      LIMIT 200`,
+    [userId]
+  );
+  return rows.map((row) => ({
+    docId: row.id,
+    filename: row.filename,
+    numChunks: row.num_chunks,
+    uploadedAt: row.created_at,
+  }));
+}
+
+/**
+ * Deletes a document and everything derived from it (M10).
+ *
+ * Removing a file from the setup UI used to clear the local selection and
+ * nothing else: the text, its chunks and its embeddings stayed in the
+ * database indefinitely, with no way for a learner to get rid of material
+ * they had uploaded. The chunks go with it through the foreign key's
+ * ON DELETE CASCADE, so there is one statement and no orphans.
+ *
+ * Scoped by user_id: a document id is an identifier, not a permission.
+ * Returns false when there was nothing of theirs to delete, which the route
+ * turns into a 404 rather than a misleading success.
+ */
+export async function deleteDocumentForUser(docId: string, userId: number): Promise<boolean> {
+  const result = await pool.query(`DELETE FROM documents WHERE id = $1 AND user_id = $2`, [
+    docId,
+    userId,
+  ]);
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function documentExists(docId: string, userId: number): Promise<boolean> {
   const { rows } = await pool.query(
     `SELECT 1 FROM documents WHERE id = $1 AND user_id = $2`,

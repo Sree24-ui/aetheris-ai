@@ -23,7 +23,8 @@ const lib = (name: string) =>
 let session: { user?: { id?: string } } | null = null;
 
 /** Documents, by id, with their owning user — the stub store for ownership. */
-const documents = new Map<string, number>([["3f2504e0-4f89-11d3-9a0c-0305e82c3301", 1]]);
+const OWNED_DOC = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+const documents = new Map<string, number>();
 
 /**
  * In-memory stand-ins for the two commands whose contract the routes depend
@@ -98,6 +99,15 @@ before(() => {
       searchDocument: async () => [{ chunkId: "c0", text: "grounded", score: 1 }],
       ingestDocument: async () => ({ numChunks: 1, preview: "p", sample: "s" }),
       getFullDocumentText: async () => "",
+      listDocumentsForUser: async (userId: number) =>
+        [...documents.entries()]
+          .filter(([, owner]) => owner === userId)
+          .map(([docId]) => ({ docId, filename: "notes.pdf", numChunks: 1, uploadedAt: "" })),
+      deleteDocumentForUser: async (docId: string, userId: number) => {
+        if (documents.get(docId) !== userId) return false;
+        documents.delete(docId);
+        return true;
+      },
     },
   });
   mock.module(lib("serverMemory.ts"), {
@@ -141,6 +151,8 @@ beforeEach(async () => {
   session = null;
   historyRows.clear();
   paths.clear();
+  documents.clear();
+  documents.set(OWNED_DOC, 1);
   quizzes.clear();
   attempts.clear();
   shortAnswerGrades = 0;
@@ -160,6 +172,20 @@ function post(body?: unknown): Request {
 
 function get(): Request {
   return new Request("https://aetheris.invalid/api/x", { method: "GET" });
+}
+
+function del(body?: unknown): Request {
+  return new Request("https://aetheris.invalid/api/x", {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+function request(method: "GET" | "POST" | "PATCH" | "DELETE", body?: unknown): Request {
+  if (method === "GET") return get();
+  if (method === "DELETE") return del(body);
+  return post(body);
 }
 
 type Handler = (req: Request) => Promise<Response>;
@@ -190,7 +216,9 @@ const validPlan = {
 };
 
 /** Every sensitive route, with a body that would otherwise be accepted. */
-const matrix: { route: string; method: "GET" | "POST" | "PATCH"; body?: unknown }[] = [
+const matrix: { route: string; method: "GET" | "POST" | "PATCH" | "DELETE"; body?: unknown }[] = [
+  { route: "documents", method: "GET" },
+  { route: "documents", method: "DELETE", body: { docId: OWNED_DOC } },
   { route: "instruction", method: "POST", body: { text: "teach me algebra" } },
   { route: "learning-path", method: "POST", body: { topic: "Algebra", profile: validProfile } },
   { route: "lesson/plan", method: "POST", body: { topic: "Algebra", profile: validProfile } },
@@ -246,14 +274,14 @@ for (const { route, method, body } of matrix) {
     const handler = handlers[method];
     assert.ok(handler, `no ${method} handler exported by ${route}`);
     session = null;
-    const response = await handler(method === "GET" ? get() : post(body));
+    const response = await handler(request(method, body));
     assert.equal(response.status, 401, `${method} /api/${route}`);
   });
 
   test(`${method} /api/${route} refuses a session with no user id`, async () => {
     const handlers = await loadRoute(route);
     session = { user: {} };
-    const response = await handlers[method](method === "GET" ? get() : post(body));
+    const response = await handlers[method](request(method, body));
     assert.equal(response.status, 401, `${method} /api/${route}`);
   });
 }
@@ -278,6 +306,41 @@ test("a document belonging to another learner cannot ground a lesson", async () 
   session = { user: { id: "2" } };
   const stranger = await POST(post({ topic: "Algebra", profile: validProfile, docId }));
   assert.equal(stranger.status, 404, "another learner's document must not be reachable");
+});
+
+test("a learner can delete their own document, once", async () => {
+  const { DELETE, GET } = await loadRoute("documents");
+  session = { user: { id: "1" } };
+
+  const listed = await (await GET(get())).json();
+  assert.equal(listed.documents.length, 1);
+
+  const first = await DELETE(del({ docId: OWNED_DOC }));
+  assert.equal(first.status, 200);
+
+  // M10: gone from storage, not just from the form's local state.
+  const after = await (await GET(get())).json();
+  assert.equal(after.documents.length, 0);
+
+  // A second delete reports honestly rather than claiming success again.
+  const second = await DELETE(del({ docId: OWNED_DOC }));
+  assert.equal(second.status, 404);
+});
+
+test("another learner's document cannot be deleted or listed", async () => {
+  const { DELETE, GET } = await loadRoute("documents");
+  session = { user: { id: "2" } };
+
+  const stranger = await DELETE(del({ docId: OWNED_DOC }));
+  assert.equal(stranger.status, 404);
+
+  const listed = await (await GET(get())).json();
+  assert.deepEqual(listed.documents, []);
+
+  // And it is still there for its owner.
+  session = { user: { id: "1" } };
+  const owner = await (await GET(get())).json();
+  assert.equal(owner.documents.length, 1);
 });
 
 test("an unknown document id is a 404, not a server error", async () => {

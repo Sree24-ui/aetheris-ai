@@ -195,6 +195,12 @@ Two consequences worth knowing about:
   a shared store means changing one function (`consume` in
   `src/lib/security/rateLimit.ts`).
 
+**Uploaded material** can be deleted from the setup screen, which removes the
+document, its chunks and its embeddings. `npm run retention` reports uploads
+older than `DOCUMENT_RETENTION_DAYS` (90 by default) and deletes them with
+`--apply`; point a scheduler at it rather than expecting the app to run it.
+Deleting an account removes its documents, history and quizzes by cascade.
+
 Security controls are covered by regression tests — `npm test` runs the
 open-redirect, expression-injection, diagram-injection, zip-bomb,
 authorization-matrix and cross-tenant cases.

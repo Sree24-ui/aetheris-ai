@@ -185,6 +185,12 @@ export const advancePathRequestSchema = z.object({
   fromStepIndex: z.number().int().min(0).max(19),
 });
 
+// --- /api/documents -------------------------------------------------------
+
+export const deleteDocumentRequestSchema = z.object({
+  docId: z.uuid(),
+});
+
 // --- /api/profile ---------------------------------------------------------
 
 export const profilePatchSchema = z.object({

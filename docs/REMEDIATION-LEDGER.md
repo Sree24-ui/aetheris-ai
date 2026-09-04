@@ -14,8 +14,8 @@ open carries its current status and the exact next step.
 ```bash
 npm run lint       # eslint            -> clean
 npx tsc --noEmit   # TypeScript strict -> clean
-npm test           # 316 tests         -> 316 pass, 0 fail
-npm run build      # production build  -> compiled, 21 routes
+npm test           # 322 tests         -> 322 pass, 0 fail
+npm run build      # production build  -> compiled, 22 routes
 npm run check      # all three of the above in sequence
 ```
 
@@ -27,9 +27,8 @@ none are being hidden.
 
 | Status | Count | IDs |
 | --- | --- | --- |
-| Fixed, with regression tests | 15 | C1, C2, H1, H2, H4, H5, H6, H7, H9, M1, M2, M7, M8, M9, M15 |
+| Fixed, with regression tests | 17 | C1, C2, H1, H2, H4, H5, H6, H7, H9, M1, M2, M7, M8, M9, M10, M11, M15 |
 | Partially fixed | 6 | H3, H8, H10, H12, M12, M16 |
-| Confirmed, still open — Phase 1 | 2 | M10, M11 |
 | Confirmed, still open — Phase 2 | 5 | H11, M3, M4, M5, M6 |
 | Confirmed, still open — Phase 3/4 | 2 | M13, L2 |
 | Already accurate / closed | 2 | M14, L1 |
@@ -430,8 +429,8 @@ data-integrity findings, which the report itself places in Phases 1 and 2.
 | M7 | Parse failure sits outside the provider retry loop | **Fixed** | `callModelSchema` parses *and* validates inside the operation, with bounded repair. Covered indirectly by the schema tests; a provider-level contract test is Phase 4. |
 | M8 | Retry envelope can exceed route duration | **Fixed** | `TOTAL_DEADLINE_MS` (default 50s, under the 60s `maxDuration`). No attempt starts that cannot finish, and each attempt's timeout is clamped to the remaining budget. |
 | M9 | Numeric config parser lacks integer and upper bounds | **Fixed** | `src/lib/appConfig.ts` now has `parseNumber`/`count`/`duration`/`ratio` with explicit domains. `MODEL_TEMPERATURE=0` is now accepted (it was silently replaced by 0.7); every token budget has a ceiling; `CHUNK_OVERLAP` falls back when it is not smaller than the chunk size. |
-| M10 | No document deletion, retention or cleanup | Open (Phase 1) | |
-| M11 | VideoRecorder track/object-URL/duration cleanup | Open (Phase 1) | |
+| M10 | No document deletion, retention or cleanup | **Fixed** | `GET`/`DELETE /api/documents` list and delete a learner's uploads, scoped by session — chunks and embeddings go with the row through `ON DELETE CASCADE`. "Remove" in the setup form now actually deletes, and reports failure instead of clearing the selection and leaving the upload stored. `npm run retention` sweeps documents past `DOCUMENT_RETENTION_DAYS` (dry run by default, `--apply` to delete). Deliberately not self-scheduled: where a recurring job runs is an infrastructure decision. 6 tests, including cross-tenant delete. |
+| M11 | VideoRecorder track/object-URL/duration cleanup | **Fixed** | Unmount stops an in-flight recording and releases the capture tracks, so the browser's "sharing this tab" indicator no longer outlives the component. Object URLs are revoked before a new recording replaces one and on unmount; the chunk array is dropped once the blob exists, instead of holding the recording twice. Caps at 30 minutes and 512 MB, both of which stop cleanly and keep what was captured, with a live counter. |
 | M12 | Accessibility gaps | Partially fixed | Graphs now carry a text alternative (`role="img"` plus a description of expression, domain and label) and diagrams carry an accessible name; a rejected diagram is announced as a note rather than being silent. Labels, focus management, live regions and reduced-motion remain Phase 3. |
 | M13 | Password reset, verification, linking, export, deletion | Open (Phase 3) | |
 | M14 | README does not match the implementation | Closed | Already corrected by commit `54ea286` before this session; verified — no OpenRouter, filesystem-storage or localStorage-memory references remain. A Security Model section and the new commands were added. |
@@ -478,8 +477,11 @@ staging before production.
 
 Phase 1 continues, in this order:
 
-1. **M10/M11** — document deletion and retention; VideoRecorder track
-   cleanup, object-URL revocation and duration/size caps.
-2. **Durable `lesson_sessions`** — the server-owned aggregate that closes the
-   rest of H8 (dashboard rehydration, one transactional completion), the rest
-   of H10 (checkpoint keys off the client), and gives refresh-and-resume.
+1. **Durable `lesson_sessions`** — the last Phase 1 item, and the one the
+   remaining partial findings hang off. A server-owned lesson aggregate
+   closes the rest of H8 (dashboard rehydration, one transactional
+   completion) and the rest of H10 (checkpoint answer keys stop being shipped
+   inside the lesson plan), and gives refresh-and-resume.
+
+Then Phase 2 opens with H11 (asynchronous ingestion), which is where the
+infrastructure decisions below start to bite.
