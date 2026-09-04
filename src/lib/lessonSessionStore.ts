@@ -1,6 +1,11 @@
 import type { PoolClient } from "pg";
 import { pool } from "./db";
-import { PROMPT_VERSION, isLive, type LessonSessionState } from "./lessonState";
+import {
+  PROMPT_VERSION,
+  isLive,
+  type LessonSource,
+  type LessonSessionState,
+} from "./lessonState";
 import type { LearnerHistoryEntry, LearnerProfile, LessonPlan } from "./types";
 
 /**
@@ -28,11 +33,12 @@ interface SessionRow {
   checkpoint_results: LessonSessionState["checkpointResults"];
   transcript: LessonSessionState["transcript"];
   quiz_id: string | null;
+  sources: LessonSource[];
   version: number;
 }
 
 const SELECT_COLUMNS = `id, status, topic, language, profile, plan, path_topic, path_step_index,
-  current_section_index, checkpoint_results, transcript, quiz_id, version`;
+  current_section_index, checkpoint_results, transcript, quiz_id, sources, version`;
 
 function rowToState(row: SessionRow): LessonSessionState {
   return {
@@ -48,6 +54,7 @@ function rowToState(row: SessionRow): LessonSessionState {
     checkpointResults: row.checkpoint_results ?? [],
     transcript: row.transcript ?? [],
     quizId: row.quiz_id,
+    sources: row.sources ?? [],
     version: row.version,
   };
 }
@@ -58,6 +65,7 @@ export interface NewSession {
   language: string;
   profile: LearnerProfile;
   plan: LessonPlan;
+  sources?: LessonSource[];
   pathTopic?: string | null;
   pathStepIndex?: number | null;
 }
@@ -84,9 +92,9 @@ export async function createSession(
     );
     const { rows } = await client.query<SessionRow>(
       `INSERT INTO lesson_sessions
-         (id, user_id, status, topic, language, profile, plan, path_topic,
-          path_step_index, prompt_version)
-       VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, $9)
+         (id, user_id, status, topic, language, profile, plan, sources,
+          path_topic, path_step_index, prompt_version)
+       VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING ${SELECT_COLUMNS}`,
       [
         session.id,
@@ -95,6 +103,7 @@ export async function createSession(
         session.language,
         JSON.stringify(session.profile),
         JSON.stringify(session.plan),
+        JSON.stringify(session.sources ?? []),
         session.pathTopic ?? null,
         session.pathStepIndex ?? null,
         PROMPT_VERSION,

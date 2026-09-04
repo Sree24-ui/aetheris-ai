@@ -58,6 +58,7 @@ const base = (overrides: Partial<LessonSessionState> = {}): LessonSessionState =
   checkpointResults: [],
   transcript: [],
   quizId: null,
+  sources: [],
   version: 3,
   ...overrides,
 });

@@ -179,6 +179,22 @@ export const SERVER_ERROR_FALLBACK_MS = duration(process.env.LLM_SERVER_ERROR_FA
 // --- Retrieval and ingestion --------------------------------------------
 /** Chunks pulled from an uploaded document to ground a lesson. */
 export const RETRIEVAL_TOP_K = count(process.env.RETRIEVAL_TOP_K, 10, 100);
+/**
+ * How many candidates each retrieval arm contributes before fusion. Wider
+ * than TOP_K on purpose: fusion can only rank what it was given.
+ */
+export const RETRIEVAL_CANDIDATES = count(process.env.RETRIEVAL_CANDIDATES, 40, 400);
+/**
+ * Minimum fused score for a passage to be used at all. Without a floor, a
+ * document with nothing relevant in it still returned its ten least-irrelevant
+ * chunks, and the lesson was "grounded" in them.
+ */
+export const RETRIEVAL_MIN_SCORE = ratio(process.env.RETRIEVAL_MIN_SCORE, 0.02, 1);
+/**
+ * Most passages taken from any one part of the document, so ten chunks of the
+ * same slide cannot crowd out the rest of the material.
+ */
+export const RETRIEVAL_MAX_PER_SOURCE = count(process.env.RETRIEVAL_MAX_PER_SOURCE, 3, 50);
 /** Target characters per chunk, and the overlap carried between them. */
 export const CHUNK_MAX_CHARS = count(process.env.CHUNK_MAX_CHARS, 900, 20_000);
 /**

@@ -15,6 +15,11 @@
 // own transaction and recorded with a checksum. Editing a file that has
 // already been applied is treated as an error rather than silently ignored,
 // because the two environments would then disagree about what "0002" means.
+//
+// db/optional/ is deliberately not applied by this runner. What is in there
+// changes the database itself (extensions, index types) rather than the
+// application's schema, and that is a decision to take deliberately per
+// environment — see the header of each file.
 import { readFileSync, readdirSync } from "fs";
 import { createHash } from "crypto";
 import { fileURLToPath } from "url";

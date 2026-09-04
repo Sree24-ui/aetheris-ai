@@ -74,6 +74,8 @@ export interface SourceChunkRef {
   chunkId: string;
   text: string;
   score: number;
+  /** Where in the document the passage came from, when the chunker knew. */
+  source?: string;
 }
 
 export interface EvalResult {

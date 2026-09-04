@@ -7,9 +7,15 @@ import {
   RETRY_BASE_DELAY_MS,
   TOTAL_DEADLINE_MS,
 } from "./appConfig";
-import { LlmError } from "./llmError";
+import { LlmError, type LlmErrorKind } from "./llmError";
 import { createGeminiProvider } from "./providers/gemini";
 import { createGroqProvider } from "./providers/groq";
+import {
+  recordFailure,
+  recordSuccess,
+  shouldAttempt,
+  type FailureKind,
+} from "./providers/circuitBreaker";
 import type { LlmProvider } from "./providers/types";
 
 // Provider selection.
@@ -41,15 +47,71 @@ function resolveProviderId(): ProviderId {
   });
 }
 
-let cachedProvider: LlmProvider | null = null;
-let cachedProviderId: ProviderId | null = null;
+const providerCache = new Map<ProviderId, LlmProvider>();
+
+function providerFor(id: ProviderId): LlmProvider {
+  const cached = providerCache.get(id);
+  if (cached) return cached;
+  const created = id === "gemini" ? createGeminiProvider() : createGroqProvider();
+  providerCache.set(id, created);
+  return created;
+}
 
 function getProvider(): LlmProvider {
-  const id = resolveProviderId();
-  if (cachedProvider && cachedProviderId === id) return cachedProvider;
-  cachedProvider = id === "gemini" ? createGeminiProvider() : createGroqProvider();
-  cachedProviderId = id;
-  return cachedProvider;
+  return providerFor(resolveProviderId());
+}
+
+/** Whether a backend has enough configuration to be worth trying. */
+function isConfigured(id: ProviderId): boolean {
+  const key = id === "gemini" ? process.env.GEMINI_API_KEY : process.env.GROQ_API_KEY;
+  return typeof key === "string" && key.trim().length > 0;
+}
+
+/**
+ * The backends to try, in order.
+ *
+ * A selected provider's outage used to be an application outage: there was no
+ * failover, so every request spent its whole retry envelope rediscovering the
+ * same failure. The other backend is used as a fallback when it is configured
+ * — an awkwardly worded lesson is better than no lesson — and
+ * LLM_FALLBACK_PROVIDER=none turns that off for a deployment that would rather
+ * fail than switch model.
+ */
+function providerChain(): ProviderId[] {
+  const primary = resolveProviderId();
+  const configured = process.env.LLM_FALLBACK_PROVIDER?.trim().toLowerCase();
+  if (configured === "none") return [primary];
+
+  const fallback: ProviderId =
+    configured === "gemini" || configured === "google"
+      ? "gemini"
+      : configured === "groq"
+        ? "groq"
+        : primary === "groq"
+          ? "gemini"
+          : "groq";
+
+  if (fallback === primary || !isConfigured(fallback)) return [primary];
+  return [primary, fallback];
+}
+
+/**
+ * How the breaker should treat a failure.
+ *
+ * An exhausted quota, a rejected key or an unknown model will fail the same
+ * way for every caller until someone changes something; a timeout or a 5xx
+ * usually will not.
+ */
+function failureKind(kind: LlmErrorKind): FailureKind {
+  return kind === "quota" || kind === "auth" || kind === "model" ? "permanent" : "transient";
+}
+
+/** Structured, and free of prompt or learner content. */
+function logAttempt(fields: Record<string, string | number | boolean>): void {
+  const line = Object.entries(fields)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ");
+  console.info(`[llm] ${line}`);
 }
 
 async function sleep(ms: number) {
@@ -95,10 +157,55 @@ interface GenerateContext {
 }
 
 async function generateContent(
+  options: GenerateOptions,
+  ctx: GenerateContext
+): Promise<string> {
+  const chain = providerChain();
+  let lastError: Error | null = null;
+
+  for (const id of chain) {
+    if (!shouldAttempt(id)) {
+      // The circuit is open: skip straight to the next backend rather than
+      // spending this one's retry envelope rediscovering the same failure.
+      logAttempt({ provider: id, outcome: "skipped", reason: "circuit-open" });
+      continue;
+    }
+    try {
+      const text = await generateFromProvider(providerFor(id), options, ctx);
+      recordSuccess(id);
+      return text;
+    } catch (err) {
+      if (err instanceof LlmError) {
+        recordFailure(id, failureKind(err.kind));
+        logAttempt({ provider: id, outcome: "failed", kind: err.kind });
+      } else {
+        recordFailure(id, "transient");
+        logAttempt({ provider: id, outcome: "failed", kind: "unknown" });
+      }
+      lastError = err instanceof Error ? err : new Error(String(err));
+      // Only fall through to the next backend while there is time to use it.
+      if (Date.now() >= ctx.deadline) break;
+    }
+  }
+
+  throw (
+    lastError ||
+    new LlmError({
+      kind: "unknown",
+      message: `No AI backend was available (tried: ${chain.join(", ")})`,
+      userMessage: "The AI service is unavailable right now. Try again in a moment.",
+      retryable: true,
+      httpStatus: 503,
+    })
+  );
+}
+
+/** One backend's own attempt-and-retry loop. */
+async function generateFromProvider(
+  provider: LlmProvider,
   { system, user, maxOutputTokens, responseMimeType }: GenerateOptions,
   ctx: GenerateContext
 ): Promise<string> {
-  const provider = getProvider();
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {

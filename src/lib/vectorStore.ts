@@ -1,12 +1,16 @@
 import { pool } from "./db";
 import { chunkText } from "./chunk";
-import { embedTexts, embedText, cosineSimilarity } from "./embeddings";
+import { embedTexts, embedText, cosineSimilarity, EMBEDDING_MODEL } from "./embeddings";
 import {
   CONCEPT_SAMPLE_CHARS,
   CONCEPT_SAMPLE_CHUNKS,
   DOCUMENT_PREVIEW_CHARS,
+  RETRIEVAL_CANDIDATES,
+  RETRIEVAL_MAX_PER_SOURCE,
+  RETRIEVAL_MIN_SCORE,
   RETRIEVAL_TOP_K,
 } from "./appConfig";
+import { fuseRankings, selectPassages, type Candidate } from "./retrieval/fusion";
 import type { SourceChunkRef } from "./types";
 
 // Documents live in Postgres, not on disk.
@@ -24,6 +28,7 @@ import type { SourceChunkRef } from "./types";
 interface StoredChunk {
   chunk_id: string;
   text: string;
+  source: string | null;
   embedding: number[];
 }
 
@@ -54,12 +59,23 @@ export async function ingestDocument(
     if (chunks.length > 0) {
       const values: unknown[] = [];
       const tuples = chunks.map((c, i) => {
-        const base = i * 5;
-        values.push(docId, c.id, c.index, c.text, JSON.stringify(vectors[i]));
-        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`;
+        const base = i * 7;
+        // The embedding model is stored with the vector: two models' vectors
+        // are not comparable, and retrieval filters on this.
+        values.push(
+          docId,
+          c.id,
+          c.index,
+          c.text,
+          JSON.stringify(vectors[i]),
+          c.source ?? null,
+          EMBEDDING_MODEL
+        );
+        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
       });
       await client.query(
-        `INSERT INTO document_chunks (document_id, chunk_id, chunk_index, text, embedding)
+        `INSERT INTO document_chunks
+           (document_id, chunk_id, chunk_index, text, embedding, source, embedding_model)
          VALUES ${tuples.join(", ")}`,
         values
       );
@@ -80,47 +96,106 @@ export async function ingestDocument(
   };
 }
 
+/**
+ * Finds the passages of a document most relevant to a query (M4, M5, M6).
+ *
+ * Hybrid: a lexical arm in Postgres and a vector arm in Node, fused by
+ * reciprocal rank. The lexical arm matters more than it looks — it is what
+ * finds an exact term, a name or a number that an embedding smooths away, and
+ * it is the arm that still works when the embedding model has changed and the
+ * old vectors no longer apply.
+ *
+ * ponytail: the vector arm is still an O(n) scan over one document's chunks in
+ * Node, which is fine for the few hundred rows a document produces and is not
+ * fine for a shared corpus. `db/optional/0001_pgvector.sql` is the upgrade,
+ * and it needs a decision about the database extension before it can be
+ * applied — see docs/REMEDIATION-LEDGER.md (M4).
+ */
 export async function searchDocument(
   docId: string,
   userId: number,
   query: string,
   topK = RETRIEVAL_TOP_K
 ): Promise<SourceChunkRef[]> {
-  const { rows } = await pool.query<StoredChunk>(
-    `SELECT c.chunk_id, c.text, c.embedding
+  const [lexical, vector] = await Promise.all([
+    lexicalCandidates(docId, userId, query),
+    vectorCandidates(docId, userId, query),
+  ]);
+
+  const fused = fuseRankings([vector, lexical]);
+  return selectPassages(fused, {
+    topK,
+    minScore: RETRIEVAL_MIN_SCORE,
+    maxPerSource: RETRIEVAL_MAX_PER_SOURCE,
+  }).map((passage) => ({
+    chunkId: passage.chunkId,
+    text: passage.text,
+    score: passage.score,
+    source: passage.source,
+  }));
+}
+
+/** Full-text candidates, ranked by Postgres. */
+async function lexicalCandidates(
+  docId: string,
+  userId: number,
+  query: string
+): Promise<Candidate[]> {
+  // 'simple' rather than 'english': English stemming and stop words would
+  // actively harm the other 21 languages this product teaches in.
+  const { rows } = await pool.query<{ chunk_id: string; text: string; source: string | null }>(
+    `SELECT c.chunk_id, c.text, c.source
        FROM document_chunks c
        JOIN documents d ON d.id = c.document_id
-      WHERE c.document_id = $1 AND d.user_id = $2
+      WHERE c.document_id = $1
+        AND d.user_id = $2
+        AND to_tsvector('simple', c.text) @@ websearch_to_tsquery('simple', $3)
+      ORDER BY ts_rank(to_tsvector('simple', c.text), websearch_to_tsquery('simple', $3)) DESC
+      LIMIT $4`,
+    [docId, userId, query, RETRIEVAL_CANDIDATES]
+  );
+  return rows.map((row) => ({
+    chunkId: row.chunk_id,
+    text: row.text,
+    source: row.source ?? undefined,
+  }));
+}
+
+/** Embedding candidates, scored in Node over this document's chunks. */
+async function vectorCandidates(
+  docId: string,
+  userId: number,
+  query: string
+): Promise<Candidate[]> {
+  const { rows } = await pool.query<StoredChunk>(
+    `SELECT c.chunk_id, c.text, c.source, c.embedding
+       FROM document_chunks c
+       JOIN documents d ON d.id = c.document_id
+      WHERE c.document_id = $1
+        AND d.user_id = $2
+        -- Vectors from a different model are not comparable with this one.
+        -- NULL covers rows written before the column existed, whose vectors
+        -- came from the model that was the default at the time.
+        AND (c.embedding_model = $3 OR c.embedding_model IS NULL)
       ORDER BY c.chunk_index`,
-    [docId, userId]
+    [docId, userId, EMBEDDING_MODEL]
   );
   if (rows.length === 0) return [];
 
   const queryVec = await embedText(query);
-  const scored = rows.map((r) => ({
+  const scored: (Candidate & { similarity: number })[] = rows.map((r) => ({
     chunkId: r.chunk_id,
     text: r.text,
+    source: r.source ?? undefined,
     // JSONB comes back already parsed by `pg`, but a column written by an
     // older build could still be a string — normalise before scoring.
-    score: cosineSimilarity(
+    similarity: cosineSimilarity(
       queryVec,
       Array.isArray(r.embedding) ? r.embedding : JSON.parse(r.embedding as unknown as string)
     ),
   }));
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topK);
-}
-
-export async function getFullDocumentText(docId: string, userId: number): Promise<string> {
-  const { rows } = await pool.query<{ text: string }>(
-    `SELECT c.text
-       FROM document_chunks c
-       JOIN documents d ON d.id = c.document_id
-      WHERE c.document_id = $1 AND d.user_id = $2
-      ORDER BY c.chunk_index`,
-    [docId, userId]
-  );
-  return rows.map((r) => r.text).join("\n\n");
+  scored.sort((a, b) => b.similarity - a.similarity);
+  return scored.slice(0, RETRIEVAL_CANDIDATES);
 }
 
 export interface DocumentRecord {

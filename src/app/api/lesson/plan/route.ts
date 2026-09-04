@@ -5,6 +5,7 @@ import { lessonPlanRequestSchema } from "@/lib/schemas/requests";
 import { planLesson } from "@/lib/teachingAgent";
 import { searchDocument, documentExists } from "@/lib/vectorStore";
 import { toLearnerPlan } from "@/lib/lessonState";
+import { formatCitations } from "@/lib/retrieval/fusion";
 import { createSession } from "@/lib/lessonSessionStore";
 
 export const runtime = "nodejs";
@@ -34,6 +35,8 @@ export const POST = defineRoute(
 
     let groundedContext: string | undefined;
     let isDocumentGrounded = false;
+    /** Which passages grounded the lesson, kept so a claim can be traced. */
+    let sources: { chunkId: string; source: string | null; score: number }[] = [];
 
     if (docId) {
       // H4: documents are owned. The id comes from the request, the owner
@@ -42,8 +45,22 @@ export const POST = defineRoute(
       const exists = await documentExists(docId, userId);
       if (!exists) throw new ApiError(404, "notFound", "That document could not be found.");
       const results = await searchDocument(docId, userId, topic);
-      groundedContext = results.map((r, i) => `[Excerpt ${i + 1}]\n${r.text}`).join("\n\n");
-      isDocumentGrounded = true;
+      if (results.length === 0) {
+        // Retrieval now has a relevance floor, so "nothing passed it" is a
+        // real outcome. Teaching from general knowledge is honest; teaching
+        // from the document's ten least-irrelevant chunks was not.
+        console.info(`[lesson-plan] no passage of ${docId} passed the relevance threshold`);
+      } else {
+        groundedContext = formatCitations(
+          results.map((r) => ({ chunkId: r.chunkId, text: r.text, source: r.source, score: r.score }))
+        );
+        isDocumentGrounded = true;
+        sources = results.map((r) => ({
+          chunkId: r.chunkId,
+          source: r.source ?? null,
+          score: Math.round(r.score * 1000) / 1000,
+        }));
+      }
     }
 
     const plan = await planLesson({ topic, profile, groundedContext, isDocumentGrounded });
@@ -55,6 +72,7 @@ export const POST = defineRoute(
         language: plan.language,
         profile,
         plan,
+        sources,
         pathTopic: body.pathTopic ?? null,
         pathStepIndex: body.pathStepIndex ?? null,
       },

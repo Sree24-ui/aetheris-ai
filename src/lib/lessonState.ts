@@ -25,6 +25,13 @@ export interface CheckpointResult {
   studentAnswer: string;
 }
 
+/** A passage that grounded the lesson, so a claim can be traced to it. */
+export interface LessonSource {
+  chunkId: string;
+  source: string | null;
+  score: number;
+}
+
 export interface LessonSessionState {
   id: string;
   status: LessonStatus;
@@ -40,6 +47,8 @@ export interface LessonSessionState {
   checkpointResults: CheckpointResult[];
   transcript: TranscriptMessage[];
   quizId: string | null;
+  /** The retrieved passages this lesson was built from, for traceability. */
+  sources: LessonSource[];
   /** Optimistic-concurrency token; every accepted command increments it. */
   version: number;
 }

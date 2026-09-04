@@ -71,6 +71,7 @@ function publicView(session: Awaited<ReturnType<typeof loadSession>>) {
     currentSectionIndex: session.currentSectionIndex,
     checkpointResults: session.checkpointResults,
     transcript: session.transcript,
+    sources: session.sources,
     version: session.version,
   };
 }
