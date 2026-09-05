@@ -51,8 +51,8 @@ jobs:
       - run: npm install -g npm@11.6.2
       - run: node -v && npm -v
       - run: npm ci
+      - run: npx next typegen
       - run: npx tsc --noEmit
-
   test:
     runs-on: ubuntu-latest
     steps:
