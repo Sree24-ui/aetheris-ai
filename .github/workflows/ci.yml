@@ -19,9 +19,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # No secrets are needed: nothing here touches the database or a model
-  # provider. A build-time placeholder keeps Auth.js from failing to
-  # initialise during the production build.
   AUTH_SECRET: ci-placeholder-secret-not-used-at-runtime
   NEXT_TELEMETRY_DISABLED: "1"
 
@@ -30,10 +27,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version-file: package.json
+          node-version: "22"
           cache: npm
+
+      - run: npm install -g npm@11.6.2
+      - run: node -v && npm -v
       - run: npm ci
       - run: npm run lint
 
@@ -41,10 +42,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version-file: package.json
+          node-version: "22"
           cache: npm
+
+      - run: npm install -g npm@11.6.2
+      - run: node -v && npm -v
       - run: npm ci
       - run: npx tsc --noEmit
 
@@ -52,11 +57,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version-file: package.json
+          node-version: "22"
           cache: npm
+
+      - run: npm install -g npm@11.6.2
+      - run: node -v && npm -v
       - run: npm ci
+
       # Includes the security regression suites: expression injection, open
       # redirects, diagram injection, zip bombs, prompt injection, the
       # authorization matrix and cross-tenant access.
@@ -66,10 +76,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version-file: package.json
+          node-version: "22"
           cache: npm
+
+      - run: npm install -g npm@11.6.2
+      - run: node -v && npm -v
       - run: npm ci
       - run: npm run build
 
@@ -80,9 +94,13 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version-file: package.json
+          node-version: "22"
           cache: npm
+
+      - run: npm install -g npm@11.6.2
+      - run: node -v && npm -v
       - run: npm ci
       - run: npm audit --audit-level=high
