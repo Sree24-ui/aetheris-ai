@@ -101,6 +101,16 @@ export const SPEECH_WATCHDOG_MIN_MS = num(process.env.NEXT_PUBLIC_SPEECH_WATCHDO
 export const SPEECH_WATCHDOG_MAX_MS = num(process.env.NEXT_PUBLIC_SPEECH_WATCHDOG_MAX_MS, 60_000);
 /** Fresh window granted after resuming a paused utterance. */
 export const SPEECH_RESUME_WATCHDOG_MS = num(process.env.NEXT_PUBLIC_SPEECH_RESUME_WATCHDOG_MS, 20_000);
+/**
+ * How far the watchdog sits above the reading estimate.
+ *
+ * The watchdog used to be set to the estimate itself, which made it both a
+ * guillotine on narration that ran slower than predicted and — for a lesson
+ * running silently — the thing that ended each section. Keeping it above the
+ * estimate leaves it as what it is meant to be: a backstop that fires only
+ * when the engine has genuinely gone quiet.
+ */
+export const SPEECH_WATCHDOG_SLACK_MS = num(process.env.NEXT_PUBLIC_SPEECH_WATCHDOG_SLACK_MS, 15_000);
 
 // =========================================================================
 // SERVER-ONLY — read inside route handlers and lib code that never ships to

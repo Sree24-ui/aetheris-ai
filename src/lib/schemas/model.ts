@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeDiagramSource } from "../security/diagram";
 
 /**
  * Runtime schemas for everything the model produces (H2).
@@ -51,6 +52,16 @@ export const timelineEventSchema = z.object({
   event: z.string().min(1).max(600),
 });
 
+/**
+ * A section's visual aid.
+ *
+ * Mermaid content is normalised on the way in, before it is stored: the model
+ * routinely emits the diagram as one line with the two characters `\` and `n`
+ * where the line breaks belong, or wrapped in a ```mermaid fence, and Mermaid
+ * answers either with "Parse error on line 1". Repairing it here means the
+ * stored plan is already correct, so every later reader — the renderer, a
+ * resumed session, a translated copy — gets a diagram that parses.
+ */
 export const visualSpecSchema = z.object({
   type: z.enum(["none", "markdown", "equation", "graph", "mermaid", "code", "timeline"]),
   content: optionalString(8000),
@@ -61,7 +72,11 @@ export const visualSpecSchema = z.object({
     .max(40)
     .nullish()
     .transform((v) => v ?? undefined),
-});
+}).transform((visual) =>
+  visual.type === "mermaid" && visual.content
+    ? { ...visual, content: normalizeDiagramSource(visual.content) }
+    : visual
+);
 
 export const checkpointQuestionSchema = z.object({
   id: identifier,

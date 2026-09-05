@@ -17,7 +17,11 @@ export const runtime = "nodejs";
  * row is written against an id the client reuses across attempts.
  *
  * The score is not accepted from the request. It is read from the graded
- * attempt the server stored.
+ * attempt the server stored — and neither are the topic, the language or the
+ * subject the lesson is recorded under: this route used to fill those in as
+ * empty strings, because it had no source for them once the plan stopped
+ * being posted back. `completeLesson` takes them from the session row it
+ * locks, which has carried them since the lesson was planned.
  */
 export const POST = defineRoute(
   {
@@ -41,11 +45,8 @@ export const POST = defineRoute(
         sessionId: body.sessionId,
         expectedVersion: body.expectedVersion,
         quizId: body.quizId,
-        history: {
+        record: {
           id: body.historyId,
-          topic: "",
-          date: new Date().toISOString(),
-          language: "",
           strongAreas: body.report.strongAreas,
           weakAreas: body.report.weakAreas,
           recommendation: body.report.recommendation,
@@ -64,6 +65,15 @@ export const POST = defineRoute(
     if ("conflict" in outcome) {
       if (outcome.conflict === "not-found") {
         throw new ApiError(404, "notFound", "That lesson could not be found.");
+      }
+      if (outcome.conflict === "incomplete-session") {
+        // A bug in this application, not something the learner did or can fix.
+        // Thrown unhandled on purpose: the route's error mapping turns it into
+        // a 500 with a request id and keeps the detail server-side, where the
+        // session id below sits next to it in the log.
+        throw new Error(
+          `lesson session ${body.sessionId} has no topic or language to record a completion under`
+        );
       }
       throw new ApiError(
         409,

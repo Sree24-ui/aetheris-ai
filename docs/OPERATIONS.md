@@ -21,7 +21,7 @@ something is not implemented, it says so rather than describing an intention.
 
 ```bash
 npm ci
-npm run check          # lint + typecheck + 415 tests
+npm run check          # lint + typecheck + 453 tests
 npm run migrate -- --status
 npm run migrate        # only if that listed something pending
 npm run build

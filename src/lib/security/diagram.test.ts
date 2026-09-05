@@ -6,6 +6,7 @@ import {
   FORBIDDEN_SVG_TAGS,
   FORBIDDEN_SVG_ATTRS,
   MAX_DIAGRAM_LENGTH,
+  normalizeDiagramSource,
 } from "./diagram";
 
 /**
@@ -97,4 +98,68 @@ test("the SVG deny-list covers every active-content sink", () => {
   for (const attr of ["href", "xlink:href", "src", "formaction", "target"]) {
     assert.ok(FORBIDDEN_SVG_ATTRS.includes(attr), `missing attribute: ${attr}`);
   }
+});
+
+// --- diagrams the model wrote badly --------------------------------------
+
+/**
+ * Real browser failure: Mermaid was handed
+ * `flowchart LR\n    A[Airflow] --> ...` as a single line containing the two
+ * characters `\` and `n`, and answered "Parse error on line 1". The model had
+ * escaped the newlines a second time on the way into its JSON.
+ */
+
+test("escaped newlines become real ones", () => {
+  const broken = "flowchart LR\\n    A[Airflow] --> B[Spark]\\n    B --> C[Warehouse]";
+  assert.ok(!broken.includes("\n"), "the fixture must be the one-line form");
+
+  const fixed = normalizeDiagramSource(broken);
+  assert.equal(fixed.split("\n").length, 3);
+  assert.ok(fixed.startsWith("flowchart LR"));
+  assert.ok(!fixed.includes("\\n"), "no literal backslash-n may survive");
+});
+
+test("an escaped carriage return pair is one line break, not two", () => {
+  assert.equal(normalizeDiagramSource("graph TD\\r\\nA-->B"), "graph TD\nA-->B");
+  assert.equal(normalizeDiagramSource("graph TD\\rA-->B"), "graph TD\nA-->B");
+});
+
+test("escaped tabs become indentation rather than a parse error", () => {
+  assert.equal(normalizeDiagramSource("graph TD\\n\\tA-->B"), "graph TD\n  A-->B");
+});
+
+test("a fenced diagram is unwrapped", () => {
+  // The model writes markdown for a person when asked for a diagram.
+  assert.equal(normalizeDiagramSource("```mermaid\nflowchart TD\n  A --> B\n```"), "flowchart TD\n  A --> B");
+  assert.equal(normalizeDiagramSource("```\ngraph LR\n  A --> B\n```"), "graph LR\n  A --> B");
+  assert.equal(normalizeDiagramSource("```MERMAID\ngraph LR\n  A --> B\n```"), "graph LR\n  A --> B");
+});
+
+test("a fence around an escaped diagram is handled in one pass", () => {
+  assert.equal(normalizeDiagramSource("```mermaid\nflowchart LR\\n  A --> B\n```"), "flowchart LR\n  A --> B");
+});
+
+test("a diagram that was already correct is returned unchanged", () => {
+  const good = "flowchart LR\n    A[Airflow] --> B[Spark]";
+  assert.equal(normalizeDiagramSource(good), good);
+});
+
+test("normalisation never throws, whatever it is handed", () => {
+  for (const value of [undefined, null, 42, {}, [], true]) {
+    assert.equal(normalizeDiagramSource(value), "");
+  }
+});
+
+test("a normalised diagram still has to pass the security checks", () => {
+  // Repairing the syntax must not become a way around the source gate: an
+  // escaped injection unescapes into an injection, and is still refused.
+  const escaped = 'flowchart LR\\n    A --> B\\n    click A "javascript:alert(1)"';
+  const fixed = normalizeDiagramSource(escaped);
+  assert.ok(fixed.includes("\n"), "it was repaired");
+  assert.equal(checkMermaidDefinition(fixed).ok, false, "and still rejected");
+});
+
+test("the repaired form of the reported diagram passes the checks", () => {
+  const reported = "flowchart LR\\n    A[Airflow] --> B[Spark]\\n    B --> C[Warehouse]";
+  assert.equal(checkMermaidDefinition(normalizeDiagramSource(reported)).ok, true);
 });

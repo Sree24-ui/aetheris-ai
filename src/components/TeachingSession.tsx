@@ -12,6 +12,17 @@ import VoiceSettings from "./VoiceSettings";
 import Icon from "./Icon";
 import { LANGUAGES } from "@/lib/languages";
 import { mapWithConcurrency } from "@/lib/concurrency";
+import { applyTranslations, translationFailure } from "@/lib/lessonTranslation";
+import { STANCE_PRESENTATION, type TeachingStance } from "@/lib/adaptation";
+import { AVATAR_EXPRESSIONS, avatarStateFor } from "@/lib/avatarState";
+import {
+  beginSection,
+  narrationBody,
+  narrationText,
+  playCommand,
+  reachCheckpoint,
+  retranslateTranscript,
+} from "@/lib/lessonPlayback";
 import { TRANSLATE_CONCURRENCY } from "@/lib/appConfig";
 import {
   getVoicePrefsServerSnapshot,
@@ -78,6 +89,12 @@ export default function TeachingSession({
   const [phase, setPhase] = useState<Phase>("narrating");
   const [answer, setAnswer] = useState("");
   const [evalResult, setEvalResult] = useState<EvalResult | null>(null);
+  /**
+   * How the teaching is currently adapting, as the server judged it from the
+   * checkpoint outcomes it recorded. Shown rather than merely applied: a
+   * lesson that quietly changes register looks like an inconsistent one.
+   */
+  const [stance, setStance] = useState<{ stance: TeachingStance; note: string } | null>(null);
   const [translating, setTranslating] = useState(false);
   const [translateError, setTranslateError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -115,9 +132,15 @@ export default function TeachingSession({
 
   const sectionsRef = useRef(sections);
   const languageRef = useRef(language);
+  /**
+   * Which language switch owns the UI. A switch that finishes after a newer
+   * one started must not apply: the dropdown would say one language while the
+   * sections said another, which reads as the switch having done nothing.
+   */
+  const switchGenerationRef = useRef(0);
+  const translateAbortRef = useRef<AbortController | null>(null);
   const handledRef = useRef(false);
   const msgIdRef = useRef(0);
-  const startedForRef = useRef<string | null>(null);
   const videoFrameRef = useRef<HTMLDivElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -134,6 +157,11 @@ export default function TeachingSession({
     msgIdRef.current += 1;
     setMessages((prev) => [...prev, { id: `m${msgIdRef.current}`, role, text }]);
   }
+
+  // The lesson's own bubbles are keyed by section, so a replay rewrites them
+  // in place rather than appending a second copy — and beginning a section
+  // clears its question, so the transcript can never show one while the input
+  // says the lesson is waiting for the next.
 
   // Clearing the badge here rather than in an effect keyed on `panelTab`:
   // reacting to the tab change would be a setState triggered by render.
@@ -189,14 +217,24 @@ export default function TeachingSession({
     return () => document.removeEventListener("fullscreenchange", sync);
   }, []);
 
-  useEffect(() => {
-    // React Strict Mode (dev only) invokes effects twice on mount to surface
-    // impurities; without this guard that double-invocation would speak the
-    // narration twice and push duplicate chat messages.
-    const runKey = `${index}:${playToken}`;
-    if (startedForRef.current === runKey) return;
-    startedForRef.current = runKey;
+  // Leaving the lesson mid-switch must not leave a fan-out of translation
+  // requests running, nor let one land on an unmounted component.
+  useEffect(
+    () => () => {
+      switchGenerationRef.current += 1;
+      translateAbortRef.current?.abort();
+    },
+    []
+  );
 
+  useEffect(() => {
+    // React invokes effects twice on mount in development. This deliberately
+    // has no guard against that: `speak` supersedes whatever it replaces, so
+    // the second run cancels the first and only one utterance is heard, and
+    // the transcript is keyed by section so the message is rewritten rather
+    // than repeated. A guard that skipped the second run used to sit here, and
+    // it was half of why no lesson ever narrated — it suppressed the only run
+    // that happened after the speech controller had been torn down and re-armed.
     let cancelled = false;
     const sec = sectionsRef.current[index];
     if (!sec) return;
@@ -204,10 +242,8 @@ export default function TeachingSession({
     setEvalResult(null);
     setAnswer("");
     handledRef.current = false;
-    const textToSpeak = [sec.narration, sec.example ? `For example: ${sec.example}` : ""]
-      .filter(Boolean)
-      .join(" ");
-    addMessage("ai", sec.narration + (sec.example ? `\n\nExample: ${sec.example}` : ""));
+    const textToSpeak = narrationText(sec, "narrating");
+    setMessages((prev) => beginSection(prev, index, narrationBody(sec)));
     speak(textToSpeak, languageRef.current).then((outcome) => {
       // H9: narration now reports *why* it finished. Only a real ending
       // advances the lesson — cancelling (skip, pause-then-leave, a voice
@@ -218,7 +254,7 @@ export default function TeachingSession({
       handledRef.current = true;
       if (sec.checkpoint) {
         setPhase("checkpoint");
-        addMessage("ai", sec.checkpoint.question);
+        setMessages((prev) => reachCheckpoint(prev, index, sec.checkpoint!.question));
       } else {
         goNext();
       }
@@ -235,7 +271,7 @@ export default function TeachingSession({
     stop();
     if (section.checkpoint) {
       setPhase("checkpoint");
-      addMessage("ai", section.checkpoint.question);
+      setMessages((prev) => reachCheckpoint(prev, index, section.checkpoint!.question));
     } else {
       goNext();
     }
@@ -299,7 +335,11 @@ export default function TeachingSession({
       // H10: the question, its reference answer and the section context all
       // come from the plan the server stored. This names a section; it does
       // not carry the key, and the verdict it gets back is the server's.
-      const graded = await apiRequest<{ evaluation: EvalResult; version: number }>(
+      const graded = await apiRequest<{
+        evaluation: EvalResult;
+        version: number;
+        adaptation?: { stance: TeachingStance; note: string };
+      }>(
         "/api/lesson/evaluate",
         {
           method: "POST",
@@ -313,6 +353,7 @@ export default function TeachingSession({
         }
       );
       versionRef.current = graded.version;
+      if (graded.adaptation) setStance(graded.adaptation);
       const result = graded.evaluation;
       setEvalResult(result);
 
@@ -385,70 +426,97 @@ export default function TeachingSession({
     }
   }
 
+  /**
+   * Switches the teaching language of the whole lesson.
+   *
+   * Every section is translated, not just the ones still to come, and the
+   * transcript's own bubbles are rewritten from the result. Translating only
+   * from the current section left a lesson in two languages at once — English
+   * narration above a Korean checkpoint — because the bubbles already on
+   * screen were never revisited.
+   *
+   * What is *not* translated: the learner's own answers, and the teacher's
+   * in-the-moment feedback. Those are a record of what was said, and rewriting
+   * a learner's words in another language is not a thing to do silently.
+   *
+   * Three things have to hold for the switch to be visible: narration for the
+   * old language has to stop (and release whatever was awaiting it), the
+   * translated sections have to land on the lesson as it stands when they
+   * arrive rather than as it was when the switch started, and a switch that
+   * has been superseded has to leave the newer one alone.
+   */
   async function handleLanguageChange(newLang: string) {
     if (newLang === language) return;
+    // Releases the section in progress as "cancelled", which the narration
+    // effect deliberately does not advance on.
     stop();
+
+    translateAbortRef.current?.abort();
+    const abort = new AbortController();
+    translateAbortRef.current = abort;
+    const generation = ++switchGenerationRef.current;
+
     setTranslating(true);
     setTranslateError(null);
     try {
-      const updated = [...sectionsRef.current];
-      const remaining = updated.slice(index);
       // Windowed rather than all-at-once: see TRANSLATE_CONCURRENCY above.
-      const settled = await mapWithConcurrency(remaining, TRANSLATE_CONCURRENCY, async (sec, offset) => {
-        try {
-          const res = await fetch("/api/lesson/translate-section", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ section: sec, targetLanguage: newLang }),
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            return { i: index + offset, section: null, error: data.error as string | undefined };
+      const settled = await mapWithConcurrency(
+        sectionsRef.current,
+        TRANSLATE_CONCURRENCY,
+        async (sec, index) => {
+          try {
+            const res = await fetch("/api/lesson/translate-section", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ section: sec, targetLanguage: newLang }),
+              signal: abort.signal,
+            });
+            if (!res.ok) {
+              const data = await res.json().catch(() => ({}));
+              return { index, section: null, error: data.error as string | undefined };
+            }
+            return { index, section: (await res.json()) as LessonSection };
+          } catch {
+            return { index, section: null };
           }
-          return { i: index + offset, section: await res.json(), error: undefined };
-        } catch {
-          return { i: index + offset, section: null, error: undefined };
         }
-      });
+      );
 
-      const failures = settled.filter((r) => r.section === null);
-      for (const r of settled) {
-        if (r.section) updated[r.i] = r.section;
-      }
-      setSections(updated);
+      // A newer switch (or an unmount) owns the lesson now. Applying this
+      // batch would put the previous language back underneath a dropdown
+      // showing the newer one.
+      if (generation !== switchGenerationRef.current) return;
+
+      const translated = applyTranslations(sectionsRef.current, settled);
+      setSections(translated);
+      // The bubbles already on screen are rewritten from the same sections, so
+      // the transcript and the caption cannot disagree about the language.
+      setMessages((prev) => retranslateTranscript(prev, translated));
       setLanguage(newLang);
+      // Replays the current section, now translated. The narration effect
+      // keys on this, so it re-runs even though the index has not moved.
       setPlayToken((t) => t + 1);
-      if (failures.length > 0) {
-        // Surface the API's own explanation (quota, rate limit) rather than
-        // only a count, so the learner knows whether retrying will help.
-        const reason = failures.find((f) => f.error)?.error;
-        setTranslateError(
-          `${failures.length} of ${settled.length} sections stayed in the original language.` +
-            (reason ? ` ${reason}` : "")
-        );
-      }
+      setTranslateError(translationFailure(settled));
     } finally {
-      setTranslating(false);
+      if (generation === switchGenerationRef.current) setTranslating(false);
     }
   }
 
   function togglePlayPause() {
-    if (speechState === "speaking") {
-      pause();
-    } else if (speechState === "paused") {
-      resume();
-    } else {
-      // Idle: narration already finished. Previously this did nothing at all,
-      // leaving a play button that looked enabled but was inert. Re-read the
-      // current text instead (the question once we're at the checkpoint).
-      const sec = sectionsRef.current[index];
-      if (!sec) return;
-      const text =
-        phase === "checkpoint" || phase === "evaluating"
-          ? sec.checkpoint?.question
-          : [sec.narration, sec.example ? `For example: ${sec.example}` : ""].filter(Boolean).join(" ");
-      if (text) speak(text, languageRef.current);
-    }
+    const command = playCommand({
+      state: speechState,
+      phase,
+      section: sectionsRef.current[index],
+    });
+    if (command.kind === "pause") pause();
+    else if (command.kind === "resume") resume();
+    // Narrating: re-run the effect that owns the section, so the lesson still
+    // advances when this utterance ends. Speaking directly from here started a
+    // second utterance nobody was waiting on, which stalled the lesson.
+    else if (command.kind === "replay") setPlayToken((t) => t + 1);
+    // Parked at a checkpoint or on remediation: re-read it. Nothing waits on
+    // this one, and the phase has its own way forward.
+    else if (command.kind === "speak") void speak(command.text, languageRef.current);
   }
 
   async function toggleFullscreen() {
@@ -466,6 +534,17 @@ export default function TeachingSession({
 
   const progress = Math.round(((index + (phase === "done" ? 1 : 0)) / sections.length) * 100);
   const isAnswering = phase === "checkpoint" || phase === "evaluating";
+  /**
+   * What the teacher is doing, for the avatar. Derived rather than stored:
+   * every one of these is already a fact about the lesson, and a second copy
+   * of it would be a second thing that can fall out of step.
+   */
+  const narrationSilent = !canNarrate(language);
+  const avatarState = avatarStateFor({
+    speechState,
+    phase,
+    answeredCorrectly: evalResult?.correct ?? null,
+  });
 
   return (
     <div className="flex flex-col xl:flex-row gap-6 px-4 sm:px-6 lg:px-8 py-6 xl:h-[calc(100vh-var(--app-shell-offset,5rem))] xl:overflow-hidden">
@@ -478,8 +557,26 @@ export default function TeachingSession({
                 style={{ ["--progress" as string]: `${progress}%` }}
               />
             </div>
-            <div className="text-xs text-on-surface-variant mt-1.5">
-              Section {index + 1} of {sections.length} · {lessonPlan.subject}
+            <div className="text-xs text-on-surface-variant mt-1.5 flex items-center gap-2 flex-wrap">
+              <span>
+                Section {index + 1} of {sections.length} · {lessonPlan.subject}
+              </span>
+              {stance && (
+                <span
+                  role="status"
+                  title={stance.note}
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 border ${
+                    stance.stance === "support"
+                      ? "border-tertiary/40 text-tertiary-fixed-dim"
+                      : stance.stance === "stretch"
+                        ? "border-secondary/40 text-secondary-fixed-dim"
+                        : "border-outline/30 text-on-surface-variant"
+                  }`}
+                >
+                  <Icon name={STANCE_PRESENTATION[stance.stance].icon} className="text-[14px]" />
+                  {STANCE_PRESENTATION[stance.stance].label}
+                </span>
+              )}
             </div>
           </div>
 
@@ -518,12 +615,13 @@ export default function TeachingSession({
           <div className="text-xs text-error">{translateError}</div>
         )}
 
-        {!canNarrate(language) && (
+        {narrationSilent && (
           <div className="flex items-start gap-2 text-xs text-tertiary-fixed-dim">
             <Icon name="voice_over_off" className="text-[16px] shrink-0 mt-px" />
             <span>
-              No {language} voice on this device — the lesson is running without narration.
-              Captions, diagrams and questions are unaffected.
+              No {language} voice on this device — the lesson runs without narration and
+              advances at reading pace. Captions, diagrams, questions and pause/play are
+              unaffected.
             </span>
           </div>
         )}
@@ -536,11 +634,34 @@ export default function TeachingSession({
           ref={videoFrameRef}
           className="glass-panel rounded-2xl flex-1 relative overflow-hidden min-h-[340px] sm:min-h-[440px] flex flex-col items-center gap-4 p-6"
         >
-          <div className="absolute inset-0 bg-gradient-to-br from-primary-container/10 via-transparent to-secondary-container/10" />
+          {/* The room behind the teacher: a faint board ruling and a warm
+              wash, so the stage reads as somewhere a class happens rather than
+              as an empty panel. Purely decorative, and behind everything. */}
+          <div
+            aria-hidden
+            className="absolute inset-0 bg-gradient-to-br from-primary-container/10 via-transparent to-secondary-container/10"
+          />
+          <div aria-hidden className="absolute inset-0 teaching-board-grid opacity-[0.35]" />
+
+          {/* What the teacher is doing, in one word, where a viewer's eye
+              already is. The lesson's own adaptation chip stays in the header;
+              this is only the teacher's current activity. */}
+          <div className="relative z-10 self-start flex items-center gap-2 text-[11px] text-on-surface-variant">
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                speechState === "speaking" ? "bg-primary animate-pulse" : "bg-outline"
+              }`}
+            />
+            <span role="status">
+              {narrationSilent && speechState === "speaking"
+                ? "Silent narration"
+                : AVATAR_EXPRESSIONS[avatarState].status}
+            </span>
+          </div>
 
           <div className="relative z-10 flex-1 min-h-0 w-full flex flex-col items-center justify-center gap-5">
             <div className="flex-1 min-h-0 w-full flex items-center justify-center">
-              <Avatar speaking={speechState === "speaking"} mouthOpen={mouthOpen} />
+              <Avatar state={avatarState} mouthOpen={mouthOpen} silent={narrationSilent} />
             </div>
 
             {showCaptions && (
@@ -590,7 +711,15 @@ export default function TeachingSession({
           </div>
         </div>
 
-        <div className="glass-panel rounded-2xl p-6 max-h-80 overflow-y-auto">
+        {/* The visual aid is a teaching surface, not a preview strip. The card
+            is sized by its content between a floor that fits an ordinary
+            diagram and a ceiling that keeps the stage above it on screen;
+            only genuinely oversized content scrolls inside it. */}
+        <div className="glass-panel rounded-2xl p-6 pt-5 min-h-[18rem] max-h-[min(72vh,44rem)] overflow-y-auto border-t-2 border-t-primary/30">
+          <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-primary-fixed-dim mb-2">
+            <Icon name="co_present" className="text-[14px]" />
+            Teaching board
+          </div>
           <div className="flex items-center justify-between mb-4 gap-3">
             <h3 className="font-headline-md text-[17px] text-on-surface flex items-center gap-2">
               {section.title}
@@ -610,7 +739,7 @@ export default function TeachingSession({
             </ul>
           )}
           {section.visual && section.visual.type !== "none" && (
-            <div className="rounded-xl bg-surface-container-lowest/50 p-5 overflow-x-auto">
+            <div className="rounded-xl bg-surface-container-lowest/50 p-5 overflow-x-auto min-h-[13rem] sm:min-h-[16rem]">
               <SlideRenderer visual={section.visual} />
             </div>
           )}
@@ -738,19 +867,31 @@ export default function TeachingSession({
                     evalResult.correct ? "bg-secondary/10 border-secondary/30" : "bg-tertiary/10 border-tertiary/30"
                   }`}
                 >
-                  <div className="font-medium mb-1">{evalResult.correct ? "✓ Correct" : "Let's fix this misconception"}</div>
+                  <div className="font-medium mb-1 flex items-center gap-1.5">
+                    <Icon
+                      name={evalResult.correct ? "check_circle" : "psychology"}
+                      className="text-[16px]"
+                    />
+                    {evalResult.correct ? "Correct" : "Let's fix this misconception"}
+                  </div>
                   {evalResult.misconception && (
                     <p className="text-on-surface-variant">Misconception: {evalResult.misconception}</p>
                   )}
-                  {phase === "remediation" && (
-                    <button
-                      onClick={() => goNext()}
-                      className="mt-2 px-4 py-1.5 rounded-full bg-primary-container text-on-primary-container text-xs"
-                    >
-                      Continue lesson
-                    </button>
-                  )}
+                  {stance && <p className="text-on-surface-variant mt-1">{stance.note}</p>}
                 </div>
+              )}
+
+              {/* Remediation's only way forward. It used to be a small chip
+                  inside the feedback box, below the answer input, where it was
+                  easy to miss entirely and the lesson looked stuck. */}
+              {phase === "remediation" && (
+                <button
+                  onClick={() => goNext()}
+                  className="w-full px-4 py-3 rounded-full bg-primary-container text-on-primary-container text-sm font-medium flex items-center justify-center gap-2 hover:brightness-110"
+                >
+                  Continue lesson
+                  <Icon name="arrow_forward" className="text-[18px]" />
+                </button>
               )}
             </div>
           </>

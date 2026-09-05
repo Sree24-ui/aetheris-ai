@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { contentSecurityPolicy, createNonce, securityHeaders } from "./headers";
+import { createHash } from "node:crypto";
+import { contentSecurityPolicy, createNonce, securityHeaders, sha256Base64 } from "./headers";
+import { APPEARANCE_BOOTSTRAP } from "../appearanceBootstrap";
 
 /**
  * The policy is asserted directly because it is the control that keeps C1
@@ -70,4 +72,60 @@ test("nonces are unpredictable and unique per call", () => {
     assert.ok(!seen.has(nonce), "nonce repeated");
     seen.add(nonce);
   }
+});
+
+// --- inline scripts allowed by hash rather than nonce ---------------------
+
+/**
+ * The appearance bootstrap runs before first paint and cannot carry a nonce:
+ * the browser blanks a script's nonce attribute once the element is inserted
+ * under an active CSP, so React hydrating it compared the nonce it expected
+ * against an empty attribute and reported a mismatch on every load. Hashing
+ * pins the exact bytes instead — and `strict-dynamic` keeps hashes in effect
+ * even though it ignores host allowlists and `unsafe-inline`.
+ */
+
+test("sha256Base64 matches a known digest", async () => {
+  assert.equal(await sha256Base64(""), "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
+  assert.equal(
+    await sha256Base64("abc"),
+    createHash("sha256").update("abc").digest("base64")
+  );
+});
+
+test("a hashed inline script is named in script-src", async () => {
+  const hash = await sha256Base64(APPEARANCE_BOOTSTRAP);
+  const scriptSrc = directive(
+    contentSecurityPolicy({ nonce: "abc123", isDev: false, scriptHashes: [hash] }),
+    "script-src"
+  );
+  assert.ok(scriptSrc.includes(`'sha256-${hash}'`), scriptSrc);
+});
+
+test("hashing an inline script concedes nothing else", async () => {
+  const csp = contentSecurityPolicy({
+    nonce: "abc123",
+    isDev: false,
+    scriptHashes: [await sha256Base64(APPEARANCE_BOOTSTRAP)],
+  });
+  const scriptSrc = directive(csp, "script-src");
+  assert.ok(!scriptSrc.includes("'unsafe-inline'"), scriptSrc);
+  assert.ok(!csp.includes("unsafe-eval"), csp);
+  assert.ok(scriptSrc.includes("'strict-dynamic'"), scriptSrc);
+  assert.ok(scriptSrc.includes("'nonce-abc123'"), scriptSrc);
+});
+
+test("the policy is unchanged when no inline script needs one", () => {
+  assert.equal(
+    contentSecurityPolicy({ nonce: "n", isDev: false }),
+    contentSecurityPolicy({ nonce: "n", isDev: false, scriptHashes: [] })
+  );
+});
+
+test("the bootstrap is a self-contained script, safe to hash", () => {
+  // A hash pins bytes, so the source has to be fixed at build time: no
+  // per-request value may be interpolated into it, and it must not be able to
+  // break out of the script element it is rendered into.
+  assert.ok(!APPEARANCE_BOOTSTRAP.includes("</script"), "would terminate the element early");
+  assert.ok(APPEARANCE_BOOTSTRAP.startsWith("try{"), "runs without throwing into the page");
 });

@@ -53,6 +53,40 @@ export interface LessonSessionState {
   version: number;
 }
 
+/**
+ * The metadata a finished lesson is recorded under.
+ *
+ * Completion wrote a history row with an empty topic and an empty language,
+ * because the route that built it had no source for them and filled in blanks:
+ * the values were never lost, they were never read. They belong to the session
+ * — written when the lesson was planned, never touched by a command — so this
+ * takes them from there rather than from whoever is asking to complete it.
+ */
+export interface LessonIdentity {
+  topic: string;
+  language: string;
+  subject: string | null;
+}
+
+/**
+ * The identity of a lesson, or null when it has none to record under.
+ *
+ * Returning null rather than blanks is what lets completion refuse before it
+ * reaches the database, where the same condition surfaces as a check-constraint
+ * violation that says nothing about which lesson or why.
+ */
+export function lessonIdentity(
+  state: Pick<LessonSessionState, "topic" | "language" | "plan">
+): LessonIdentity | null {
+  // The plan is the fallback because it is where both values came from when
+  // the session was created; a session row is not expected to disagree with it.
+  const topic = (state.topic || state.plan?.topic || "").trim();
+  const language = (state.language || state.plan?.language || "").trim();
+  if (!topic || !language) return null;
+  const subject = (state.plan?.subject ?? "").trim();
+  return { topic, language, subject: subject || null };
+}
+
 export type LessonCommand =
   | { type: "advance"; toSectionIndex: number; transcript?: TranscriptMessage[] }
   | { type: "checkpoint"; result: CheckpointResult }

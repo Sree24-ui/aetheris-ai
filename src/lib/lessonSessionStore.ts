@@ -3,10 +3,16 @@ import { pool } from "./db";
 import {
   PROMPT_VERSION,
   isLive,
+  lessonIdentity,
   type LessonSource,
   type LessonSessionState,
 } from "./lessonState";
-import type { LearnerHistoryEntry, LearnerProfile, LessonPlan } from "./types";
+import type {
+  HistoryQuizAnswer,
+  LearnerProfile,
+  LessonPlan,
+  TranscriptMessage,
+} from "./types";
 
 /**
  * Persistence for lesson sessions.
@@ -82,6 +88,12 @@ export async function createSession(
   session: NewSession,
   userId: number
 ): Promise<LessonSessionState> {
+  // Refused here rather than at completion: a session with no topic cannot be
+  // recorded when it finishes, and discovering that after the learner has sat
+  // through the lesson and its assessment is the worst possible moment.
+  if (!lessonIdentity(session)) {
+    throw new Error("cannot start a lesson session without a topic and a language");
+  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -183,6 +195,26 @@ export async function saveSession(
   return rows[0] ? rowToState(rows[0]) : null;
 }
 
+/**
+ * What an assessment produced, and nothing more.
+ *
+ * Deliberately not a `LearnerHistoryEntry`: the topic, the language and the
+ * subject a lesson is recorded under are the session's, and a caller that
+ * could pass them is a caller that could pass blanks. That is exactly what
+ * happened — the completion route had no source for them and filled in empty
+ * strings, and every finished lesson died on a check constraint.
+ */
+export interface CompletionRecord {
+  /** Reused across retries, so a repeated completion is a replay. */
+  id: string;
+  scorePercent: number;
+  strongAreas: string[];
+  weakAreas: string[];
+  recommendation?: string;
+  transcript: TranscriptMessage[];
+  quiz: HistoryQuizAnswer[];
+}
+
 export interface CompletionOutcome {
   session: LessonSessionState;
   historyId: string;
@@ -213,10 +245,12 @@ export async function completeLesson(
     sessionId: string;
     expectedVersion: number;
     quizId: string;
-    history: LearnerHistoryEntry;
+    record: CompletionRecord;
   },
   userId: number
-): Promise<CompletionOutcome | { conflict: "stale-version" | "not-found" }> {
+): Promise<
+  CompletionOutcome | { conflict: "stale-version" | "not-found" | "incomplete-session" }
+> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -238,7 +272,7 @@ export async function completeLesson(
       await client.query("COMMIT");
       return {
         session: state,
-        historyId: params.history.id,
+        historyId: params.record.id,
         pathStepIndex: state.pathStepIndex,
         pathAdvanced: false,
         replayed: true,
@@ -253,6 +287,16 @@ export async function completeLesson(
       return { conflict: "stale-version" };
     }
 
+    // The lesson is recorded under the metadata the session has carried since
+    // it was planned. Checked before the insert so a session that somehow has
+    // none is a named refusal rather than a check-constraint violation that
+    // names neither the lesson nor the reason.
+    const identity = lessonIdentity(state);
+    if (!identity) {
+      await client.query("ROLLBACK");
+      return { conflict: "incomplete-session" };
+    }
+
     await client.query(
       `INSERT INTO learner_history_entries
          (id, user_id, topic, occurred_at, language, subject, score_percent,
@@ -260,18 +304,18 @@ export async function completeLesson(
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (id) DO NOTHING`,
       [
-        params.history.id,
+        params.record.id,
         userId,
-        params.history.topic,
-        params.history.date,
-        params.history.language ?? null,
-        params.history.subject ?? null,
-        params.history.scorePercent ?? null,
-        JSON.stringify(params.history.strongAreas ?? []),
-        JSON.stringify(params.history.weakAreas ?? []),
-        params.history.recommendation ?? null,
-        JSON.stringify(params.history.transcript ?? []),
-        JSON.stringify(params.history.quiz ?? []),
+        identity.topic,
+        new Date().toISOString(),
+        identity.language,
+        identity.subject,
+        params.record.scorePercent,
+        JSON.stringify(params.record.strongAreas ?? []),
+        JSON.stringify(params.record.weakAreas ?? []),
+        params.record.recommendation ?? null,
+        JSON.stringify(params.record.transcript ?? []),
+        JSON.stringify(params.record.quiz ?? []),
       ]
     );
 
@@ -308,7 +352,7 @@ export async function completeLesson(
     await client.query("COMMIT");
     return {
       session: rowToState(finished[0]),
-      historyId: params.history.id,
+      historyId: params.record.id,
       pathStepIndex,
       pathAdvanced,
       replayed: false,

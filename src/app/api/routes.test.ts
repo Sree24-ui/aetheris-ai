@@ -42,6 +42,18 @@ const attempts = new Map<string, Record<string, unknown>>();
 let shortAnswerGrades = 0;
 /** What the stubbed generator returns; a test sets it before creating a quiz. */
 let quizFixture: unknown[] = [];
+/**
+ * History rows a completion actually wrote, keyed by their id.
+ *
+ * The completion route filled the topic and language in as empty strings, and
+ * the stub that stood in for the store never looked at them — so the suite
+ * passed while every real completion died on `learner_history_topic_not_blank`.
+ * Recording the row is what closes that gap.
+ */
+const completedHistory = new Map<
+  string,
+  { topic: string; language: string; subject: string | null; scorePercent: number }
+>();
 /** In-memory lesson sessions, keyed by id, with their owner. */
 interface StubSession {
   userId: number;
@@ -234,7 +246,12 @@ before(() => {
         return state;
       },
       completeLesson: async (
-        params: { sessionId: string; expectedVersion: number; quizId: string; history: { id: string } },
+        params: {
+          sessionId: string;
+          expectedVersion: number;
+          quizId: string;
+          record: { id: string; scorePercent: number };
+        },
         userId: number
       ) => {
         const row = sessions.get(params.sessionId);
@@ -242,13 +259,30 @@ before(() => {
         if (row.state.status === "completed") {
           return {
             session: row.state,
-            historyId: params.history.id,
+            historyId: params.record.id,
             pathStepIndex: row.state.pathStepIndex ?? null,
             pathAdvanced: false,
             replayed: true,
           };
         }
         if (row.state.version !== params.expectedVersion) return { conflict: "stale-version" };
+        // The real store derives these from the session it locks, and refuses
+        // when there are none. Mirrored here so a route that reintroduces
+        // client-supplied (or blank) metadata fails in this file rather than
+        // on a check constraint in production.
+        const plan = row.state.plan as { topic?: string; language?: string; subject?: string };
+        const topic = String(row.state.topic || plan?.topic || "").trim();
+        const language = String(row.state.language || plan?.language || "").trim();
+        if (!topic || !language) return { conflict: "incomplete-session" };
+        // ON CONFLICT (id) DO NOTHING: a replayed id writes nothing.
+        if (!completedHistory.has(params.record.id)) {
+          completedHistory.set(params.record.id, {
+            topic,
+            language,
+            subject: (plan?.subject ?? "").trim() || null,
+            scorePercent: params.record.scorePercent,
+          });
+        }
         row.state = {
           ...row.state,
           status: "completed",
@@ -257,7 +291,7 @@ before(() => {
         };
         return {
           session: row.state,
-          historyId: params.history.id,
+          historyId: params.record.id,
           pathStepIndex: row.state.pathStepIndex ?? null,
           pathAdvanced: row.state.pathStepIndex !== null,
           replayed: false,
@@ -338,6 +372,7 @@ beforeEach(async () => {
   shortAnswerGrades = 0;
   quizFixture = [];
   sessions.clear();
+  completedHistory.clear();
   jobs.clear();
   const { resetRateLimits } = await import(lib("security/rateLimit.ts"));
   resetRateLimits();
@@ -899,6 +934,106 @@ test("completing a lesson is one call, and safe to retry", async () => {
   const retryBody = await retry.json();
   assert.equal(retryBody.replayed, true);
   assert.equal(retryBody.pathAdvanced, false);
+
+  // Exactly one history row, however many times the learner presses Retry.
+  assert.equal(completedHistory.size, 1);
+  const third = await POST(post(payload));
+  assert.equal(third.status, 200);
+  assert.equal(completedHistory.size, 1);
+});
+
+test("completion records the lesson under its own topic and language", async () => {
+  // The production failure: the route filled these in as empty strings and
+  // PostgreSQL refused the row on `learner_history_topic_not_blank`. The
+  // lesson's metadata belongs to the session, and this is where it has to
+  // arrive from.
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  const quizId = await gradedQuiz(started.sessionId);
+  const response = await (await loadRoute("lesson/complete")).POST(
+    post({
+      sessionId: started.sessionId,
+      expectedVersion: 1,
+      quizId,
+      historyId: "3f2504e0-4f89-11d3-9a0c-0305e82c3396",
+      report: { strongAreas: [], weakAreas: [] },
+    })
+  );
+  assert.equal(response.status, 200);
+
+  const written = completedHistory.get("3f2504e0-4f89-11d3-9a0c-0305e82c3396");
+  assert.ok(written, "a completed lesson must be recorded");
+  assert.equal(written.topic, PLAN_WITH_KEY.topic);
+  assert.equal(written.language, PLAN_WITH_KEY.language);
+  assert.equal(written.subject, PLAN_WITH_KEY.subject);
+  assert.ok(written.topic.trim().length > 0, "the constraint the database enforces");
+  assert.equal(written.scorePercent, 50);
+});
+
+test("a lesson with no topic is refused before it reaches the database", async () => {
+  // Not a 200 with a blank row, and not a constraint violation surfacing as an
+  // unexplained failure: a named refusal, with the detail kept server-side.
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  const quizId = await gradedQuiz(started.sessionId);
+  const stored = sessions.get(started.sessionId)!;
+  stored.state = {
+    ...stored.state,
+    topic: "",
+    language: "",
+    plan: { ...PLAN_WITH_KEY, topic: "", language: "" },
+  };
+
+  const response = await (await loadRoute("lesson/complete")).POST(
+    post({
+      sessionId: started.sessionId,
+      expectedVersion: 1,
+      quizId,
+      historyId: "3f2504e0-4f89-11d3-9a0c-0305e82c3395",
+      report: {},
+    })
+  );
+  assert.equal(response.status, 500);
+  assert.equal(completedHistory.size, 0, "nothing may be written");
+  const body = await response.json();
+  assert.ok(body.requestId, "and the failure has to be traceable");
+  assert.ok(!JSON.stringify(body).includes("topic"), "without leaking internals");
+});
+
+test("grade, report and complete run once each and reach the result state", async () => {
+  // The whole submission, in the order the browser makes it. The client moves
+  // to the result screen on the completion response, so every step has to
+  // succeed and the last one has to carry the score it renders.
+  session = { user: { id: "1" } };
+  const started = await startLesson();
+  const quizId = await gradedQuiz(started.sessionId);
+
+  const report = await (await loadRoute("lesson/report")).POST(
+    post({ sessionId: started.sessionId, quizId })
+  );
+  assert.equal(report.status, 200);
+  const reportBody = await report.json();
+  assert.equal(reportBody.scorePercent, 50, "the stored score, not the model's");
+
+  const completion = await (await loadRoute("lesson/complete")).POST(
+    post({
+      sessionId: started.sessionId,
+      expectedVersion: 1,
+      quizId,
+      historyId: "3f2504e0-4f89-11d3-9a0c-0305e82c3394",
+      report: {
+        strongAreas: reportBody.strongAreas,
+        weakAreas: reportBody.weakAreas,
+        recommendation: reportBody.recommendation,
+      },
+    })
+  );
+  assert.equal(completion.status, 200);
+  const completionBody = await completion.json();
+  assert.equal(completionBody.replayed, false);
+  assert.equal(completionBody.scorePercent, 50);
+  assert.equal(completedHistory.size, 1);
+  assert.equal(sessions.get(started.sessionId)!.state.status, "completed");
 });
 
 test("a lesson cannot be completed before its assessment is graded", async () => {

@@ -12,6 +12,7 @@ import {
   rubricGradeSchema,
 } from "./schemas/model";
 import { RUBRIC_VERSION } from "./grading";
+import type { Adaptation } from "./adaptation";
 import { CHAT_HISTORY_TURNS, MAX_CONCEPT_TAGS, TOKEN_BUDGET } from "./appConfig";
 import type {
   LearnerProfile,
@@ -228,12 +229,19 @@ export async function evaluateAnswer(params: {
   studentAnswer: string;
   sectionContext: string;
   language: string;
+  /**
+   * How the lesson has been going, from the checkpoint results the server
+   * recorded. This is what makes the teacher respond to the student in front
+   * of it rather than to an average one. See src/lib/adaptation.ts.
+   */
+  adaptation?: Adaptation;
 }): Promise<EvalResult> {
-  const { question, studentAnswer, sectionContext, language } = params;
+  const { question, studentAnswer, sectionContext, language, adaptation } = params;
   const system = `You are an AI teacher evaluating a student's answer during a live lesson. You must:
 1. Judge correctness (be lenient on phrasing, strict on concept).
 2. If wrong or partially wrong, identify the likely MISCONCEPTION (the specific wrong mental model), not just "incorrect".
 3. Produce a short constructive re-explanation targeting that misconception, ideally with a different analogy than already used.
+${adaptation ? `4. Adapt to how this student is doing: ${adaptation.instruction}` : ""}
 Respond in ${language}. ${JSON_ONLY}`;
 
   const user = `Section context (what was just taught): ${sectionContext}

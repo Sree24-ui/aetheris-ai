@@ -23,12 +23,7 @@ export type SpeechState = "idle" | "speaking" | "paused";
  * Why an utterance finished. The distinction matters: a caller that advances
  * the lesson on completion must not advance when the learner cancelled.
  */
-export type SpeechOutcome =
-  | "ended"
-  | "cancelled"
-  | "error"
-  | "timeout"
-  | "unsupported";
+export type SpeechOutcome = "ended" | "cancelled" | "error" | "timeout";
 
 export interface SpeechRequest {
   text: string;
@@ -41,10 +36,24 @@ export interface SpeechRequest {
   volume: number;
   /**
    * How long to wait before giving up. Some browsers never fire onend at all
-   * (no installed voice, restricted permissions, headless), and without an
-   * upper bound the lesson waits forever on narration that will never finish.
+   * (restricted permissions, headless), and without an upper bound the lesson
+   * waits forever on narration that will never finish.
    */
   watchdogMs: number;
+  /**
+   * Set when no installed voice can speak this text, to the time the text
+   * takes to read.
+   *
+   * A device with no voice for the lesson's language used to be handed the
+   * text anyway: the browser fired neither `onstart` nor `onend`, so the
+   * lesson sat on an utterance that would never finish, the transport stayed
+   * "idle" (so the play button re-armed the same dead utterance instead of
+   * resuming), and only the watchdog eventually released it — up to a minute
+   * per section. Narration is skipped in that case and the section runs on a
+   * silent timer instead, so the timeline, pause/resume and completion behave
+   * exactly as they do with a voice. See src/lib/speech/silentEngine.ts.
+   */
+  silentMs?: number;
 }
 
 export interface EngineHandlers {
@@ -249,6 +258,25 @@ export class SpeechController {
     }, pending.remainingMs);
     this.engine.resume();
     this.setState("speaking");
+  }
+
+  /**
+   * Marks the controller live and returns its teardown, as one call.
+   *
+   * The two halves have to match, and keeping them separate is what broke
+   * narration outright: `useSpeech` held the controller in component state —
+   * which React preserves across the remount it simulates on every mount in
+   * development — but disposed it from an effect cleanup that runs on that
+   * remount. Nothing re-armed it, so every lesson came back holding a
+   * permanently disposed controller: `speak()` resolved "cancelled" from its
+   * first line without ever reaching an engine, so no section was ever
+   * narrated, the state never left "idle", and the play button toggled
+   * nothing. Returning the teardown from the setup makes that asymmetry
+   * impossible to write.
+   */
+  attach(): () => void {
+    this.disposed = false;
+    return () => this.dispose();
   }
 
   /** Tears down on unmount. Any waiter is released rather than stranded. */

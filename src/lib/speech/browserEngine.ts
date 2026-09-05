@@ -1,4 +1,5 @@
 import type { EngineHandlers, SpeechEngine, SpeechRequest } from "./controller";
+import { createSilentEngine } from "./silentEngine";
 
 /**
  * The only part of narration that touches `window.speechSynthesis`.
@@ -50,6 +51,67 @@ export function createBrowserEngine(): SpeechEngine {
       synth.resume();
     },
   };
+}
+
+/**
+ * Narration that speaks when the device can and keeps time when it cannot.
+ *
+ * A request carrying `silentMs` is one `useSpeech` has already established no
+ * installed voice can speak (see `pickVoice`); it runs on the silent engine so
+ * the lesson's timeline continues at reading pace. Everything else goes to the
+ * browser, which is built lazily — a device with no speech synthesis at all
+ * must never have `window.speechSynthesis` read on it.
+ */
+export function createNarrationEngine(
+  silent: SpeechEngine = createSilentEngine(),
+  /** Injectable so the routing can be asserted without a browser. */
+  speakingEngine?: SpeechEngine
+): SpeechEngine {
+  let speaking: SpeechEngine | null = speakingEngine ?? null;
+  let active: SpeechEngine = silent;
+  return {
+    start(request: SpeechRequest, handlers: EngineHandlers) {
+      active =
+        request.silentMs === undefined ? (speaking ??= createBrowserEngine()) : silent;
+      active.start(request, handlers);
+    },
+    // The controller cancels before it starts anything new, so these always
+    // reach the engine that owns the utterance in flight.
+    cancel: () => active.cancel(),
+    pause: () => active.pause(),
+    resume: () => active.resume(),
+  };
+}
+
+/** Enough of a voice to choose between them; the rest is browser detail. */
+export type VoiceLike = Pick<SpeechSynthesisVoice, "lang" | "voiceURI">;
+
+/**
+ * The voice that should speak a language, or null when the device has none.
+ *
+ * Returning null is the signal that narration has to be silent — it is the one
+ * decision that separates "this lesson can be spoken" from "this lesson runs
+ * on a timer", so it is a pure function with tests rather than a condition
+ * buried in a hook.
+ *
+ * An explicit preference wins, but only while it can still speak the lesson's
+ * language: a learner who picked a French voice and then switched the lesson
+ * to Hindi should get a Hindi voice, not French-accented Hindi.
+ */
+export function pickVoice<T extends VoiceLike>(
+  bcp47: string,
+  preferredURI: string | null | undefined,
+  voices: readonly T[]
+): T | null {
+  const prefix = bcp47.split("-")[0].toLowerCase();
+  const speaksLanguage = (v: T) => v.lang.toLowerCase().startsWith(prefix);
+
+  if (preferredURI) {
+    const chosen = voices.find((v) => v.voiceURI === preferredURI);
+    if (chosen && speaksLanguage(chosen)) return chosen;
+  }
+  const exact = voices.find((v) => v.lang.toLowerCase() === bcp47.toLowerCase());
+  return exact ?? voices.find(speaksLanguage) ?? null;
 }
 
 /** The installed voices, or an empty list where speech is unavailable. */

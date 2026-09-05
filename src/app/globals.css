@@ -435,3 +435,26 @@ a[href]:active,
 [data-motion="fluid"] .animate-float-delayed {
   animation-duration: 3s;
 }
+
+/* The AI teacher's idle motion. Kept in CSS so the reduced-motion block above
+   switches it off without the component needing to know about the preference. */
+@keyframes aetheris-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-2.5px) scale(1.008); }
+}
+@keyframes aetheris-teach {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  30% { transform: translateY(-3px) rotate(-0.7deg); }
+  70% { transform: translateY(-1px) rotate(0.6deg); }
+}
+
+/* The teaching stage's backdrop: a faint board ruling behind the AI teacher.
+   Decorative only — it sits under an aria-hidden layer and carries no meaning
+   that is not also in the text on the stage. */
+.teaching-board-grid {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--color-outline) 22%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--color-outline) 22%, transparent) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, transparent 35%, black 100%);
+}

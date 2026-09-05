@@ -4,6 +4,7 @@ import { lessonEvaluateRequestSchema } from "@/lib/schemas/requests";
 import { evaluateAnswer } from "@/lib/teachingAgent";
 import { applyCommand } from "@/lib/lessonState";
 import { loadSession, saveSession } from "@/lib/lessonSessionStore";
+import { adaptationFor } from "@/lib/adaptation";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -34,6 +35,11 @@ export const POST = defineRoute(
       throw new ApiError(404, "notFound", "That section has no checkpoint question.");
     }
 
+    // How the lesson has been going, from the outcomes the server recorded —
+    // not from anything the browser claims. This is what makes the response
+    // adapt to this student rather than to an average one.
+    const adaptation = adaptationFor(session.checkpointResults, session.profile);
+
     const evaluation = await evaluateAnswer({
       question: section.checkpoint,
       studentAnswer: body.studentAnswer,
@@ -41,6 +47,7 @@ export const POST = defineRoute(
       // Follows the language on screen after a mid-lesson switch. Only the
       // wording of the feedback; the question and key are the stored ones.
       language: body.language ?? session.language,
+      adaptation,
     });
 
     // Recorded server-side. Checkpoint outcomes used to be tallied in browser
@@ -68,6 +75,22 @@ export const POST = defineRoute(
       version = saved ? saved.version : session.version;
     }
 
-    return { evaluation, version, recorded: result.ok && result.changed };
+    // The stance is returned so the learner can see the teaching adapt rather
+    // than only feel it. It describes the answer just given, so it is computed
+    // again over the results including it.
+    const nextAdaptation = result.ok
+      ? adaptationFor(result.state.checkpointResults, session.profile)
+      : adaptation;
+
+    return {
+      evaluation,
+      version,
+      recorded: result.ok && result.changed,
+      adaptation: {
+        stance: nextAdaptation.stance,
+        streak: nextAdaptation.streak,
+        note: nextAdaptation.note,
+      },
+    };
   }
 );

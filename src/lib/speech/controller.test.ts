@@ -6,6 +6,7 @@ import {
   type SpeechEngine,
   type SpeechRequest,
 } from "./controller";
+import { createSilentEngine } from "./silentEngine";
 
 /**
  * Regression tests for H9, driven by a fake engine and a fake clock so every
@@ -288,4 +289,95 @@ test("state is reported once per transition, never repeated", async () => {
   engine.handlers!.onEnd();
   await promise;
   assert.deepEqual(states, ["speaking", "idle"]);
+});
+
+// --- a device with no voice for the lesson's language ---------------------
+
+/**
+ * The controller driving the real silent engine, which is what a Marathi
+ * lesson on a machine with no Marathi voice now runs on. These are the
+ * end-to-end guarantees the lesson depends on: it advances, it can be paused
+ * and resumed, and it can be skipped.
+ */
+function silentController() {
+  const silentClock = new FakeClock();
+  const seen: string[] = [];
+  const silent = new SpeechController(createSilentEngine(silentClock), {
+    now: silentClock.now,
+    setTimer: silentClock.setTimer,
+    clearTimer: silentClock.clearTimer,
+    onState: (state) => seen.push(state),
+  });
+  return { silent, clock: silentClock, seen };
+}
+
+const silentRequest = (silentMs = 5_000): SpeechRequest => ({
+  ...request("Rise over run.", silentMs + 15_000),
+  lang: "mr-IN",
+  silentMs,
+});
+
+test("a section with no voice ends normally instead of blocking the lesson", async () => {
+  // The bug this replaces: speechSynthesis was handed text no installed voice
+  // could speak, fired nothing, and the lesson waited on a promise that only
+  // the watchdog would ever settle — up to a minute per section.
+  const { silent, clock: silentClock } = silentController();
+  const promise = silent.speak(silentRequest(5_000));
+  silentClock.advance(5_000);
+  assert.equal(await promise, "ended", "the lesson must advance on its own");
+});
+
+test("a lesson with no voice reports speaking, so play/pause works", async () => {
+  // The play button reads this state. While it stayed "idle", clicking play
+  // started a second dead utterance instead of pausing or resuming.
+  const { silent, clock: silentClock, seen } = silentController();
+  const promise = silent.speak(silentRequest(5_000));
+  assert.equal(silent.state, "speaking");
+
+  silent.pause();
+  assert.equal(silent.state, "paused");
+  silentClock.advance(60_000);
+  assert.equal(silent.state, "paused", "a paused lesson must not advance");
+
+  silent.resume();
+  assert.equal(silent.state, "speaking");
+  silentClock.advance(5_000);
+  assert.equal(await promise, "ended");
+  assert.deepEqual(seen, ["speaking", "paused", "speaking", "idle"]);
+});
+
+test("skipping a silent section cancels it rather than advancing twice", async () => {
+  const { silent, clock: silentClock } = silentController();
+  const promise = silent.speak(silentRequest(5_000));
+  silent.stop();
+  assert.equal(await promise, "cancelled");
+  // And the abandoned timer cannot fire later against whatever is current.
+  silentClock.advance(60_000);
+  assert.equal(silentClock.pendingTimers, 0);
+});
+
+test("the watchdog sits above the silent duration, so it never pre-empts it", async () => {
+  // If the two coincided, a silent section would end as "timeout" — which the
+  // lesson treats as a failure to narrate rather than a section taught.
+  const { silent, clock: silentClock } = silentController();
+  const promise = silent.speak(silentRequest(5_000));
+  silentClock.advance(5_000);
+  assert.equal(await promise, "ended");
+});
+
+test("switching language mid-section releases the silent narration", async () => {
+  // handleLanguageChange calls stop() before translating. The promise has to
+  // settle as cancelled, or the narration effect never re-runs for the newly
+  // translated section and the switch looks as though it did nothing.
+  const { silent } = silentController();
+  const marathi = silent.speak(silentRequest(30_000));
+  silent.stop();
+  assert.equal(await marathi, "cancelled");
+
+  const translated = silent.speak(silentRequest(1_000));
+  assert.equal(silent.state, "speaking");
+  await Promise.resolve();
+  assert.equal(silent.busy, true);
+  silent.stop();
+  assert.equal(await translated, "cancelled");
 });

@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState } from "react";
-import { MERMAID_CONFIG, checkMermaidDefinition, sanitizeDiagramSvg } from "@/lib/security/diagram";
+import {
+  MERMAID_CONFIG,
+  checkMermaidDefinition,
+  normalizeDiagramSource,
+  sanitizeDiagramSvg,
+} from "@/lib/security/diagram";
 
 interface RenderedDiagram {
   /** The definition this SVG was produced from, so a stale one is never shown. */
@@ -19,11 +24,16 @@ interface RenderedDiagram {
  * now passes three gates before it reaches the DOM: a source check, Mermaid's
  * own strict mode, and an allow-list sanitiser over the rendered SVG.
  */
-export default function MermaidDiagram({ definition }: { definition: string }) {
+export default function MermaidDiagram({ definition: source }: { definition: string }) {
   const [rendered, setRendered] = useState<RenderedDiagram | null>(null);
   // A render id that is stable per component instance and unique per document,
   // instead of a module-level counter that two mounted diagrams could race on.
   const domId = `mermaid-${useId().replace(/[^a-zA-Z0-9-]/g, "")}`;
+  // Repeated here as well as in the plan schema: a lesson stored before that
+  // normalisation existed still holds a diagram written as one line of
+  // backslash-n, and re-planning the lesson is not a reasonable price for
+  // reading it back.
+  const definition = useMemo(() => normalizeDiagramSource(source), [source]);
   // Computed during render rather than in the effect, so a rejected definition
   // never renders a diagram frame at all.
   const check = useMemo(() => checkMermaidDefinition(definition), [definition]);

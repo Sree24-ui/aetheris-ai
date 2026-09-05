@@ -4,6 +4,7 @@ import {
   applyCommand,
   toLearnerPlan,
   type LessonSessionState,
+  lessonIdentity,
 } from "./lessonState";
 import type { LessonPlan } from "./types";
 
@@ -245,4 +246,74 @@ test("a rejected command never mutates the state it was given", () => {
   applyCommand(state, { type: "advance", toSectionIndex: 99 }, 3);
   applyCommand(state, { type: "advance", toSectionIndex: 1 }, 1);
   assert.equal(JSON.stringify(state), snapshot);
+});
+
+// --- what a finished lesson is recorded under -----------------------------
+
+/**
+ * Completion wrote a history row with `topic = ""` and `language = ""`, and
+ * PostgreSQL refused it: `learner_history_topic_not_blank`. The values had not
+ * been lost — the route that built the row had no source for them once the
+ * plan stopped being posted back, and filled in blanks. They live on the
+ * session, which is what these pin.
+ */
+
+test("a lesson is recorded under the session's own topic and language", () => {
+  assert.deepEqual(lessonIdentity(base()), {
+    topic: "Algebra",
+    language: "English",
+    subject: "mathematics",
+  });
+});
+
+test("the topic survives every command a lesson receives", () => {
+  // Nothing in the transition set touches topic or language, and this is what
+  // says so: create, teach, answer, complete, and it is still recordable.
+  let state = base({ topic: "Formula One", language: "English" });
+  const step = (command: Parameters<typeof applyCommand>[1]) => {
+    const result = applyCommand(state, command, state.version);
+    assert.equal(result.ok, true, `command ${command.type} was refused`);
+    state = result.state;
+  };
+
+  step({ type: "advance", toSectionIndex: 1 });
+  step({
+    type: "checkpoint",
+    result: { sectionId: "s1", conceptTag: "reasons", correct: true, studentAnswer: "Because." },
+  });
+  step({ type: "pause" });
+  step({ type: "resume" });
+  step({ type: "advance", toSectionIndex: 2 });
+  step({ type: "complete", quizId: "11111111-1111-4111-8111-111111111111" });
+
+  assert.equal(state.status, "completed");
+  assert.deepEqual(lessonIdentity(state), {
+    topic: "Formula One",
+    language: "English",
+    subject: "mathematics",
+  });
+});
+
+test("blank metadata is refused rather than written as empty strings", () => {
+  const blankPlan = { ...plan, topic: "", language: "" };
+  assert.equal(lessonIdentity(base({ topic: "", plan: blankPlan })), null);
+  assert.equal(lessonIdentity(base({ language: "", plan: blankPlan })), null);
+  assert.equal(lessonIdentity(base({ topic: "   ", plan: blankPlan })), null);
+});
+
+test("whitespace is trimmed rather than passed to the constraint", () => {
+  // `length(btrim(topic)) > 0` is the database's rule; matching it here is
+  // what keeps the refusal a named error instead of a 23514.
+  assert.equal(lessonIdentity(base({ topic: "  Formula One  " }))?.topic, "Formula One");
+});
+
+test("the plan stands in when the session's own columns are empty", () => {
+  const identity = lessonIdentity(base({ topic: "", language: "" }));
+  assert.equal(identity?.topic, "Algebra");
+  assert.equal(identity?.language, "English");
+});
+
+test("a missing subject is null, not an empty string", () => {
+  // The column is nullable; "" would be a subject the learner never chose.
+  assert.equal(lessonIdentity(base({ plan: { ...plan, subject: "" } }))?.subject, null);
 });

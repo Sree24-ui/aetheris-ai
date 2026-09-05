@@ -53,8 +53,19 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [pendingTopic, setPendingTopic] = useState<string | undefined>(undefined);
   const [pendingDoc, setPendingDoc] = useState<DocumentSummary | null>(null);
-  /** The graded attempt, kept so the retry button can re-run the report step. */
+  /** The graded attempt, kept so the retry button can finish the completion. */
   const [pendingQuizOutcome, setPendingQuizOutcome] = useState<QuizOutcome | null>(null);
+  /**
+   * The report already generated for a given assessment.
+   *
+   * Retrying a failed completion used to regenerate the report every time — a
+   * model call, and a charged one, to rebuild something that had already
+   * succeeded. Grading happens once, the report is generated once and reused,
+   * and completion itself is idempotent on the server.
+   */
+  const [reportForQuiz, setReportForQuiz] = useState<{ quizId: string; report: LearningReport } | null>(
+    null
+  );
   /**
    * H7: the id for the history row of the lesson being finished, minted once
    * and reused if the save has to be retried. A fresh UUID per attempt would
@@ -177,10 +188,14 @@ export default function Home() {
       // H10: the report is built from the lesson and the graded attempt the
       // server stored. Only their ids travel — the plan, the checkpoint
       // outcomes and the marks are not the browser's to send.
-      const reportData = await apiRequest<LearningReport>("/api/lesson/report", {
-        method: "POST",
-        body: { sessionId: lessonSession.id, quizId: outcome.quizId },
-      });
+      const reportData =
+        reportForQuiz?.quizId === outcome.quizId
+          ? reportForQuiz.report
+          : await apiRequest<LearningReport>("/api/lesson/report", {
+              method: "POST",
+              body: { sessionId: lessonSession.id, quizId: outcome.quizId },
+            });
+      setReportForQuiz({ quizId: outcome.quizId, report: reportData });
       setReport(reportData);
 
       // H8: history, learning-path progress and the lesson's own completion
@@ -208,12 +223,14 @@ export default function Home() {
 
       setPendingHistoryId(null);
       setPendingQuizOutcome(null);
+      setReportForQuiz(null);
       setLessonSession(null);
       setStage("report");
     } catch (err) {
-      // The report itself may have succeeded; the retry button re-runs this
-      // whole function, and both the history write and the path advance are
-      // idempotent, so replaying it cannot duplicate or over-advance anything.
+      // The report is kept when it succeeded, so a retry resumes at the step
+      // that failed rather than paying for it again. The history write and the
+      // path advance are idempotent on the server, so replaying the completion
+      // cannot duplicate or over-advance anything either.
       setError(describe(err));
     }
   }
@@ -236,6 +253,7 @@ export default function Home() {
     setPendingDoc(null);
     setPendingHistoryId(null);
     setPendingQuizOutcome(null);
+    setReportForQuiz(null);
     setLessonSession(null);
     setResumed(null);
   }

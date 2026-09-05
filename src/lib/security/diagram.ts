@@ -78,6 +78,41 @@ const FORBIDDEN_PATTERNS: { pattern: RegExp; reason: string }[] = [
  * Pure and side-effect free: nothing in `definition` is executed or parsed
  * as markup here.
  */
+/**
+ * Repairs a model-written diagram into something Mermaid can parse.
+ *
+ * Two failures come back from the model often enough to be worth handling
+ * rather than showing the learner a broken panel:
+ *
+ *  - **Escaped newlines.** The definition arrives as one line containing the
+ *    two characters `\` and `n` where a line break belongs, because the model
+ *    escaped them a second time on the way into its JSON. Mermaid reads that
+ *    literally and fails with "Parse error on line 1".
+ *  - **Fenced output.** The model wraps the diagram in a ```mermaid code
+ *    fence, as it would when writing markdown for a person.
+ *
+ * Neither is a security concern — the checks below still run on the result —
+ * and neither is something a real diagram would contain: Mermaid breaks a
+ * label with `<br/>`, never with a backslash-n.
+ */
+export function normalizeDiagramSource(source: unknown): string {
+  if (typeof source !== "string") return "";
+  let text = source.trim();
+
+  // ```mermaid … ``` or a bare ``` … ``` fence.
+  const fenced = /^```[\t ]*(?:mermaid)?[\t ]*\r?\n([\s\S]*?)\r?\n?```$/i.exec(text);
+  if (fenced) text = fenced[1].trim();
+
+  // Escaped whitespace, in the order that keeps \r\n one line break.
+  text = text
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\n")
+    .replace(/\\t/g, "  ");
+
+  return text.trim();
+}
+
 export function checkMermaidDefinition(definition: unknown): DiagramCheck {
   if (typeof definition !== "string") {
     return { ok: false, reason: "diagram is missing" };
